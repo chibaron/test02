@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>Web Serial Terminal</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <h1>Web Serial Terminal</h1>
+
+  <div class="controls">
+    <button id="connect">Connect</button>
+    <button id="disconnect" disabled>Disconnect</button>
+  </div>
+
+  <pre id="terminal"></pre>
+
+  <input
+    id="input"
+    type="text"
+    placeholder="Enter command..."
+    disabled
+  />
+
+  <script src="main.js"></script>
+</body>
+</html>
