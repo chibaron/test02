@@ -66,4 +66,54 @@
     }
 
     async function sendMSP(port, payload) {
-      const writer
+      const writer = port.writable.getWriter();
+      await writer.write(payload);
+      writer.releaseLock();
+    }
+
+    document.getElementById("connect").onclick = async () => {
+      try {
+        const port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 115200 });
+
+        log("Connected\n");
+        await sleep(1000);
+
+        // ===== MSP command #1 =====
+        const msp1 = [
+          0x24, 0x58, 0x3C, // "$X<"
+          0x00,
+          0xF5,           // 245
+          0x00, 0x02,
+          0x00, 0xFE, 0x11
+        ];
+
+        const crc1 = crc8_d5(msp1.slice(3));
+        msp1.push(crc1);
+
+        await sendMSP(port, new Uint8Array(msp1));
+        log("MSP #1 sent\n");
+
+        await sleep(1000);
+
+        // ===== MSP command #2 =====
+        const msp2 = [
+          0x24, 0x58, 0x3C, // "$X<"
+          0x00,
+          0x44,           // 68
+          0x00, 0x00
+        ];
+
+        const crc2 = crc8_d5(msp2.slice(3));
+        msp2.push(crc2);
+
+        await sendMSP(port, new Uint8Array(msp2));
+        log("MSP #2 sent\n");
+
+      } catch (e) {
+        log("Error: " + e + "\n");
+      }
+    };
+  </script>
+</body>
+</html>
