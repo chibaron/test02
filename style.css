@@ -1,3 +1,4 @@
+/* ===== 全体 ===== */
 body {
   background: #111;
   color: #0f0;
@@ -7,8 +8,10 @@ body {
 
 h1 {
   color: #0f0;
+  margin-bottom: 10px;
 }
 
+/* ===== 操作ボタン ===== */
 .controls {
   margin-bottom: 10px;
 }
@@ -19,12 +22,19 @@ button {
   border: 1px solid #0f0;
   padding: 5px 10px;
   cursor: pointer;
+  margin-right: 5px;
+}
+
+button:hover:not(:disabled) {
+  background: #333;
 }
 
 button:disabled {
   opacity: 0.5;
+  cursor: default;
 }
 
+/* ===== ターミナル表示 ===== */
 #terminal {
   background: #000;
   border: 1px solid #0f0;
@@ -32,13 +42,40 @@ button:disabled {
   overflow-y: auto;
   padding: 10px;
   white-space: pre-wrap;
+  margin-bottom: 5px;
 }
 
+/* ===== CLI入力 ===== */
 #input {
   width: 100%;
-  margin-top: 10px;
   background: #000;
   color: #0f0;
   border: 1px solid #0f0;
   padding: 5px;
+  box-sizing: border-box;
+}
+
+/* ===== ファイル送信 ===== */
+.file-send {
+  margin-top: 10px;
+}
+
+/* ファイル選択ボタン（input[type=file] を隠してボタン化） */
+.file-btn {
+  display: inline-block;
+  background: #222;
+  color: #0f0;
+  border: 1px solid #0f0;
+  padding: 5px 10px;
+  cursor: pointer;
+  margin-right: 5px;
+}
+
+.file-btn:hover {
+  background: #333;
+}
+
+/* 非表示 input */
+.file-btn input {
+  display: none;
 }
