@@ -140,42 +140,48 @@ window.addEventListener('DOMContentLoaded', () => {
             await writer.write(new Uint8Array([0x02, 0xFD]));
             if (!await waitResponse(0x79)) throw new Error("Get ID NACK");
 
-            // --- Step 6: Erase (ピンポイント消去) ---
-            debugLog("Step 6: Erasing specified pages...", "step");
-            
-            // 1. Extended Eraseコマンド送信
-            const eraseCmd = [0x44, 0xBB];
-            await writer.write(new Uint8Array(eraseCmd));
-            debugLog(`TX > ${eraseCmd.map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')}`, "tx");
-            
-            if (await waitResponse(0x79)) {
-                debugLog("ACK received for Erase Command.", "info");
-                
-                // Pythonコードのロジックを再現：
-                // 今回は簡単のため「ページ数 0x0000 (1ページ分)」+「ページ番号 0x0000」を送って
-                // チップが反応するかテストします。
-                // 本来はループで回すべきですが、まず最小構成でACKを確認します。
-                
-                // [N-1 bytes high, N-1 bytes low, Page High, Page Low, Checksum]
-                // 1ページ(N=1)消去なら 0x00 0x00
-                const numPagesMinusOne = [0x00, 0x00]; 
-                const pageToErase = [0x00, 0x00]; // 0ページ目
-                const erasePayload = [...numPagesMinusOne, ...pageToErase];
-                const cs = calcCS(erasePayload);
-                
-                await writer.write(new Uint8Array([...erasePayload, cs]));
-                debugLog(`TX > ${[...erasePayload, cs].map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')}`, "tx");
+            // --- Step 6: Erase (Pythonロジックを正確に再現) ---
+            debugLog("Step 6: Calculating and Erasing Pages...", "step");
 
-                debugLog("Waiting for erase ACK...", "info");
-                // タイムアウトを30秒に延長 (消去はチップによって非常に遅いため)
-                if (!await waitResponse(0x79, 30000)) {
-                    // もしNACK(0x1F)が返ってきた場合、Readout Protectionの可能性があります
-                    throw new Error("Erase failed. Device might be Read-Protected or Timeout.");
-                }
-                debugLog("Erase Successful.", "success");
-            } else {
-                throw new Error("Erase Command (0x44) NACK. Protocol error.");
+            const PAGE_SIZE = 2048; // STM32G4: 2KB
+            const startPage = Math.floor((FLASH_BASE - FLASH_BASE) / PAGE_SIZE); 
+            const endPage = Math.floor((firmware.length + (PAGE_SIZE - 1)) / PAGE_SIZE);
+            
+            // 消去するページリストを作成
+            let pages = [];
+            for (let p = startPage; p <= endPage; p++) {
+                pages.push(p);
             }
+            debugLog(`Target pages to erase: ${startPage} to ${endPage} (${pages.length} pages)`, "info");
+
+            // Extended Erase コマンド送信
+            await writer.write(new Uint8Array([0x44, 0xBB]));
+            if (!await waitResponse(0x79)) throw new Error("Erase Command NACK");
+
+            // ペイロード作成: [NumberOfPages High, NumberOfPages Low, Page0 High, Page0 Low, Page1 High, Page1 Low, ...]
+            // NumberOfPages は (ページ数 - 1) を送る仕様
+            const numPagesMinusOne = pages.length - 1;
+            let payload = [
+                (numPagesMinusOne >> 8) & 0xFF,
+                numPagesMinusOne & 0xFF
+            ];
+
+            for (let page of pages) {
+                payload.push((page >> 8) & 0xFF);
+                payload.push(page & 0xFF);
+            }
+
+            const cs = calcCS(payload);
+            await writer.write(new Uint8Array([...payload, cs]));
+            debugLog(`TX Erase Payload > ${payload.length} bytes (CheckSum: 0x${cs.toString(16).toUpperCase()})`, "tx");
+
+            debugLog("Waiting for pages erase ACK...", "info");
+            // ページ数が多い場合は時間がかかるため、しっかり待つ
+            if (!await waitResponse(0x79, 30000)) {
+                // ここで失敗する場合、チップが Readout Protection Level 1 になっている可能性が高いです
+                throw new Error("Erase failed. If this persists, try 'Full Chip Erase' or check RDP status.");
+            }
+            debugLog("Erase Successful.", "success");
 
             // --- Step 7: Write Memory ---
             debugLog("Step 7: Writing Firmware...", "step");
