@@ -2,271 +2,185 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>STM32 Web Flasher (Debug Mode)</title>
+    <title>STM32 Web Flasher (Fix Version)</title>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #2c3e50; color: white; padding: 20px; margin: 0; }
-        .container { max-width: 900px; margin: 20px auto; background: #34495e; padding: 30px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
-        h2 { border-bottom: 2px solid #2980b9; padding-bottom: 10px; margin-top: 0; }
-        
-        .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px; background: rgba(0,0,0,0.1); padding: 15px; border-radius: 8px; }
-        .control-group { display: flex; flex-direction: column; gap: 5px; }
-        
-        label { font-size: 0.9em; color: #bdc3c7; font-weight: bold; }
-        
+        body { font-family: 'Segoe UI', sans-serif; background: #2c3e50; color: white; padding: 20px; }
+        .container { max-width: 900px; margin: auto; background: #34495e; padding: 25px; border-radius: 10px; }
         #log { 
-            width: 100%; height: 400px; background: #1e1e1e; color: #00ff00; 
-            padding: 15px; font-family: 'Consolas', 'Monaco', monospace; overflow-y: scroll; 
-            white-space: pre-wrap; border: 1px solid #555; font-size: 13px;
-            box-sizing: border-box; border-radius: 4px;
+            width: 100%; height: 450px; background: #1e1e1e; color: #00ff00; 
+            padding: 15px; font-family: 'Consolas', monospace; overflow-y: scroll; 
+            white-space: pre-wrap; border: 1px solid #555; font-size: 13px; box-sizing: border-box;
         }
-        
-        /* ログの色分け */
-        .tx { color: #5dade2; } /* 送信データ */
-        .rx { color: #f4d03f; } /* 受信データ */
-        .err { color: #e74c3c; font-weight: bold; }
-        .success { color: #2ecc71; font-weight: bold; }
-        .step { color: #ffffff; font-weight: bold; background: #2980b9; padding: 2px 5px; border-radius: 3px; }
-
-        button { 
-            padding: 12px; cursor: pointer; border: none; border-radius: 5px; 
-            background: #2980b9; color: white; font-weight: bold; transition: 0.2s;
-        }
-        button:hover { background: #3498db; }
-        button:disabled { background: #7f8c8d; cursor: not-allowed; }
-        
-        input[type="file"] { background: #ecf0f1; padding: 8px; border-radius: 5px; color: #333; width: 100%; box-sizing: border-box; }
-        
-        .footer { margin-top: 15px; display: flex; justify-content: space-between; align-items: center; }
-        .status-badge { padding: 5px 10px; border-radius: 20px; font-size: 0.8em; background: #e74c3c; }
-        .status-online { background: #2ecc71; }
+        .tx { color: #5dade2; } .rx { color: #f4d03f; } .err { color: #e74c3c; font-weight: bold; }
+        .success { color: #2ecc71; font-weight: bold; } .step { color: #ffffff; background: #2980b9; padding: 2px 5px; }
+        .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px; }
+        button { padding: 12px; cursor: pointer; border: none; border-radius: 5px; background: #2980b9; color: white; font-weight: bold; }
+        button:disabled { background: #7f8c8d; }
     </style>
 </head>
 <body>
-
 <div class="container">
     <h2>STM32 UART Web Flasher</h2>
-    
     <div class="controls">
-        <div class="control-group">
-            <label>1. Firmware (Intel HEX)</label>
-            <input type="file" id="hexFile" accept=".hex">
-        </div>
-        <div class="control-group">
-            <label>2. Connection</label>
-            <button id="connectBtn">シリアルポートを選択</button>
-        </div>
-        <div class="control-group" style="grid-column: span 2;">
-            <label>3. Action</label>
-            <button id="flashBtn" disabled style="background: #27ae60;">書き込み開始 (FLASH)</button>
-        </div>
+        <input type="file" id="hexFile" accept=".hex">
+        <button id="connectBtn">① シリアルポートを選択</button>
+        <button id="flashBtn" disabled style="grid-column: span 2; background: #27ae60;">② 書き込み開始</button>
     </div>
-
     <div id="log"></div>
-
-    <div class="footer">
-        <div id="statusBadge" class="status-badge">Disconnected</div>
-        <button id="clearLogBtn" style="background:#e67e22; padding: 5px 15px; font-size: 0.8em;">ログ消去</button>
-    </div>
+    <button id="clearLogBtn" style="margin-top:10px; background:#e67e22;">ログ消去</button>
 </div>
 
 <script>
-/**
- * STM32 Web Flasher Logic
- */
 window.addEventListener('DOMContentLoaded', () => {
-    // 定数
     const FLASH_BASE = 0x08000000;
-    const WRITE_CHUNK = 256; 
-    let port, reader, writer;
+    const WRITE_CHUNK = 256;
+    let port, writer;
+    let rxBuffer = []; // 受信データを溜めるバッファ
 
     const logDiv = document.getElementById('log');
-    const statusBadge = document.getElementById('statusBadge');
-    const flashBtn = document.getElementById('flashBtn');
 
-    // --- ログ関数 ---
     function debugLog(message, type = 'info') {
         const span = document.createElement('span');
-        const now = new Date().toLocaleTimeString('ja-JP', { hour12: false, fractionDigits: 3 });
-        
         if (type === 'tx') span.className = 'tx';
         else if (type === 'rx') span.className = 'rx';
         else if (type === 'err') span.className = 'err';
         else if (type === 'success') span.className = 'success';
         else if (type === 'step') span.className = 'step';
-
-        span.textContent = `[${now}] ${message}\n`;
+        span.textContent = `[${new Date().toLocaleTimeString('ja-JP',{hour12:false,fractionDigits:3})}] ${message}\n`;
         logDiv.appendChild(span);
         logDiv.scrollTop = logDiv.scrollHeight;
     }
 
-    // --- ユーティリティ ---
-    const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-    const calcChecksum = (data) => data.reduce((a, b) => a ^ b, 0) & 0xFF;
+    // 常時受信ループ：届いたデータは即座にrxBufferへ入れる
+    async function startReading(reader) {
+        try {
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                if (value) {
+                    debugLog(`RX < ${Array.from(value).map(b => b.toString(16).toUpperCase().padStart(2,'0')).join(' ')}`, 'rx');
+                    rxBuffer.push(...value); // 全受信データをバッファに保存
+                }
+            }
+        } catch (e) { console.error(e); }
+        finally { reader.releaseLock(); }
+    }
 
-    function msp_crc8_d5(data) {
+    // 指定したバイトが届くまで待つ関数
+    async function waitResponse(targetByte, timeout = 2000) {
+        const start = Date.now();
+        while (Date.now() - start < timeout) {
+            if (rxBuffer.length > 0) {
+                const b = rxBuffer.shift(); // バッファの先頭を取り出す
+                if (b === targetByte) return true;
+            }
+            await new Promise(r => setTimeout(r, 10)); // 10ms待機して再チェック
+        }
+        return false;
+    }
+
+    const sleep = (ms) => new Promise(res => setTimeout(res, ms));
+    const calcCS = (data) => data.reduce((a, b) => a ^ b, 0) & 0xFF;
+    const mspCRC = (data) => {
         let crc = 0;
-        for (let i = 0; i < data.length; i++) {
-            crc ^= data[i];
-            for (let j = 0; j < 8; j++) {
-                if (crc & 0x80) crc = (crc << 1) ^ 0xD5;
-                else crc <<= 1;
+        for (let b of data) {
+            crc ^= b;
+            for (let i = 0; i < 8; i++) {
+                crc = (crc & 0x80) ? (crc << 1) ^ 0xD5 : crc << 1;
             }
         }
         return crc & 0xFF;
-    }
-
-    // --- 通信関数 ---
-    async function writeData(data) {
-        const arr = new Uint8Array(data);
-        debugLog(`TX > ${Array.from(arr).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ')}`, 'tx');
-        await writer.write(arr);
-    }
-
-    async function readResponse(timeout = 2000) {
-        // Web Serialの読み込みはストリームのため、1バイトずつ、またはパケット単位で取得
-        try {
-            const { value, done } = await reader.read();
-            if (value) {
-                debugLog(`RX < ${Array.from(value).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ')}`, 'rx');
-                return value;
-            }
-        } catch (e) {
-            debugLog(`Read Error: ${e}`, 'err');
-        }
-        return null;
-    }
-
-    // --- イベントリスナー ---
-    document.getElementById('clearLogBtn').onclick = () => logDiv.innerHTML = '';
+    };
 
     document.getElementById('connectBtn').onclick = async () => {
         try {
             port = await navigator.serial.requestPort();
             await port.open({ baudRate: 115200 });
             writer = port.writable.getWriter();
-            reader = port.readable.getReader();
-            
-            debugLog("Serial Port Connected.", "success");
-            statusBadge.textContent = "Connected";
-            statusBadge.className = "status-badge status-online";
-            flashBtn.disabled = false;
-        } catch (e) {
-            debugLog(`Connection Failed: ${e}`, "err");
-        }
+            startReading(port.readable.getReader()); // 受信ループ開始
+            debugLog("Serial Connected.", "success");
+            document.getElementById('flashBtn').disabled = false;
+        } catch (e) { debugLog(`Error: ${e}`, "err"); }
     };
 
-    flashBtn.onclick = async () => {
-        const fileInput = document.getElementById('hexFile');
-        if (!fileInput.files.length) return alert("HEXファイルを選択してください");
+    document.getElementById('flashBtn').onclick = async () => {
+        const file = document.getElementById('hexFile').files[0];
+        if (!file) return alert("HEXファイルを選択してください");
 
         try {
-            const file = fileInput.files[0];
             const hexText = await file.text();
             const firmware = parseHex(hexText);
-            
-            debugLog(`--- FLASH START ---`, 'step');
-            debugLog(`HEX File: ${file.name} (${firmware.length} bytes)`, 'info');
+            rxBuffer = []; // バッファをクリア
 
-            // Step 2: MSP Passthrough
-            debugLog(`Step 2: MSP Passthrough`, 'step');
-            let mspPass = [0x24, 0x58, 0x3C, 0x00, 0xF5, 0x00, 0x02, 0x00, 0xFE, 0x11];
-            mspPass.push(msp_crc8_d5(mspPass.slice(3, 10)));
-            await writeData(mspPass);
-            await sleep(500); // 1000から少し短縮して反応を見る
-            await reader.read(); // パススルー設定自体のレスポンスを空読みして捨てる
+            debugLog("Step 2: MSP Passthrough", "step");
+            let p = [0x24, 0x58, 0x3C, 0x00, 0xF5, 0x00, 0x02, 0x00, 0xFE, 0x11];
+            p.push(mspCRC(p.slice(3, 10)));
+            await writer.write(new Uint8Array(p));
+            debugLog(`TX > ${p.map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')}`, "tx");
+            await sleep(1000);
 
-            // Step 3: MSP Bootloader Start
-            debugLog(`Step 3: MSP Bootloader Start`, 'step');
-            let mspBoot = [0x24, 0x58, 0x3C, 0x00, 0x44, 0x00, 0x00, 0x00];
-            mspBoot.push(msp_crc8_d5(mspBoot.slice(3, 8)));
-            await writeData(mspBoot);
-            debugLog("Waiting for reboot to Bootloader...", "info");
-            await sleep(1000); // デバイスが再起動するのをしっかり待つ
+            debugLog("Step 3: MSP Bootloader Start", "step");
+            let b = [0x24, 0x58, 0x3C, 0x00, 0x44, 0x00, 0x00, 0x00];
+            b.push(mspCRC(b.slice(3, 8)));
+            await writer.write(new Uint8Array(b));
+            debugLog(`TX > ${b.map(x=>x.toString(16).toUpperCase().padStart(2,'0')).join(' ')}`, "tx");
+            await sleep(1500);
+            rxBuffer = []; // リブート時のゴミを捨てる
 
-            // 重要：ここで一度リーダーをリセット（既存のバッファをクリア）したい
-            // Web Serialでは直接クリアできないため、空読みをループさせる
-            debugLog("Clearing serial buffer...", "info");
-            let dump;
-            // 連続してデータが来なくなるまで読み飛ばす
-            while (true) {
-                const PromiseTimeout = (ms) => new Promise(resolve => setTimeout(() => resolve('timeout'), ms));
-                const result = await Promise.race([reader.read(), PromiseTimeout(100)]);
-                if (result === 'timeout' || !result.value) break;
-                debugLog(`Discarded old data: ${Array.from(result.value).map(b => b.toString(16))}`, "info");
+            debugLog("Step 4: Synchronizing (0x7F)", "step");
+            let synced = false;
+            for(let i=0; i<5; i++) {
+                await writer.write(new Uint8Array([0x7F]));
+                if (await waitResponse(0x79, 500)) { synced = true; break; }
+                debugLog(`Retry Sync... ${i+1}`, "info");
+            }
+            if (!synced) throw new Error("Sync Failed (ACK 0x79 not received)");
+
+            debugLog("Step 5: Get ID", "step");
+            await writer.write(new Uint8Array([0x02, 0xFD]));
+            if (!await waitResponse(0x79)) throw new Error("Get ID NACK");
+
+            debugLog("Step 6: Erasing...", "step");
+            await writer.write(new Uint8Array([0x44, 0xBB]));
+            if (await waitResponse(0x79)) {
+                await writer.write(new Uint8Array([0xFF, 0xFF, 0x00])); // Global Erase
+                await waitResponse(0x79, 5000);
             }
 
-            // Step 4: Sync
-            debugLog(`Step 4: Synchronizing (0x7F)`, 'step');
-            await writeData([0x7F]);
-            let res = await readResponse();
-            if (!res || res[0] !== 0x79) throw new Error("Sync Failed (No ACK)");
-
-            // Step 5: Get ID
-            debugLog(`Step 5: Get Device ID`, 'step');
-            await writeData([0x02, 0xFD]);
-            res = await readResponse();
-            if (!res || res[0] !== 0x79) throw new Error("Get ID Failed");
-
-            // Step 6: Erase
-            debugLog(`Step 6: Erasing Pages`, 'step');
-            // Extended Erase [0x44, 0xBB] + [0xFF, 0xFF, Checksum]
-            await writeData([0x44, 0xBB]);
-            res = await readResponse();
-            if (res && res[0] === 0x79) {
-                await writeData([0xFF, 0xFF, 0x00]); // Global Erase
-                res = await readResponse(5000);
-            }
-
-            // Step 7: Write Memory
-            debugLog(`Step 7: Writing Firmware`, 'step');
+            debugLog("Step 7: Writing Firmware...", "step");
             for (let i = 0; i < firmware.length; i += WRITE_CHUNK) {
                 const chunk = firmware.slice(i, i + WRITE_CHUNK);
                 const addr = FLASH_BASE + i;
                 
-                // Command
-                await writeData([0x31, 0xCE]);
-                await readResponse();
+                await writer.write(new Uint8Array([0x31, 0xCE]));
+                await waitResponse(0x79);
 
-                // Address + CS
-                const addrBytes = [ (addr >> 24) & 0xFF, (addr >> 16) & 0xFF, (addr >> 8) & 0xFF, addr & 0xFF ];
-                await writeData([...addrBytes, calcChecksum(addrBytes)]);
-                await readResponse();
+                const addrBytes = [(addr>>24)&0xFF, (addr>>16)&0xFF, (addr>>8)&0xFF, addr&0xFF];
+                await writer.write(new Uint8Array([...addrBytes, calcCS(addrBytes)]));
+                await waitResponse(0x79);
 
-                // Data + CS
                 const dataPayload = [chunk.length - 1, ...chunk];
-                await writeData([...dataPayload, calcChecksum(dataPayload)]);
-                await readResponse();
+                await writer.write(new Uint8Array([...dataPayload, calcCS(dataPayload)]));
+                await waitResponse(0x79);
 
-                if (i % 1024 === 0) debugLog(`Writing: ${Math.round((i/firmware.length)*100)}%`);
+                if (i % 1024 === 0) debugLog(`Progress: ${Math.round((i/firmware.length)*100)}%`);
             }
-
-            debugLog(`--- FLASH SUCCESS! ---`, 'success');
-            alert("書き込みが完了しました！");
-
-        } catch (e) {
-            debugLog(`FATAL ERROR: ${e.message}`, 'err');
-            alert("エラーが発生しました。ログを確認してください。");
-        }
+            debugLog("DONE!", "success");
+        } catch (e) { debugLog(`Error: ${e.message}`, "err"); }
     };
 
-    // Intel HEXパーサー (簡易版)
     function parseHex(hex) {
-        const lines = hex.split(/\r?\n/);
-        let bin = [];
-        for (let line of lines) {
-            line = line.trim();
-            if (!line.startsWith(':')) continue;
-            const type = parseInt(line.substring(7, 9), 16);
-            if (type === 0x00) { // Data Record
-                const bytes = line.substring(9, line.length - 2).match(/.{1,2}/g).map(h => parseInt(h, 16));
+        const bin = [];
+        hex.split(/\r?\n/).forEach(line => {
+            if (line.trim().startsWith(':') && line.substring(7,9) === '00') {
+                const bytes = line.substring(9, line.length - 3).match(/.{1,2}/g).map(h => parseInt(h, 16));
                 bin.push(...bytes);
             }
-        }
+        });
         return new Uint8Array(bin);
     }
+    document.getElementById('clearLogBtn').onclick = () => logDiv.innerHTML = '';
 });
 </script>
-
 </body>
 </html>
