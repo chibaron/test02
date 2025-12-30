@@ -1,24 +1,41 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8">
-  <title>STM32 Web Flasher</title>
-  <style>
-    body { font-family: monospace; }
-    #log { white-space: pre-wrap; border: 1px solid #ccc; height: 300px; overflow-y: scroll; }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>STM32 Web Flasher</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; line-height: 1.5; background: #f4f4f9; }
+        .container { max-width: 800px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        .controls { display: grid; gap: 10px; margin-bottom: 20px; }
+        #log { width: 100%; height: 300px; background: #1e1e1e; color: #d4d4d4; padding: 10px; font-family: monospace; overflow-y: scroll; white-space: pre-wrap; border-radius: 4px; }
+        .status-bar { margin-top: 10px; font-weight: bold; }
+        button { cursor: pointer; padding: 10px; border: none; border-radius: 4px; background: #007bff; color: white; }
+        button:disabled { background: #ccc; }
+        input[type="file"] { border: 1px solid #ddd; padding: 5px; }
+    </style>
 </head>
 <body>
 
-<h2>STM32 Web Flasher</h2>
+<div class="container">
+    <h2>STM32 Web Flasher (UART)</h2>
+    
+    <div class="controls">
+        <label>1. HEXファイルを選択:</label>
+        <input type="file" id="hexFile" accept=".hex">
+        
+        <label>2. デバイスを接続:</label>
+        <button id="connectBtn">シリアルポートを開く</button>
+        
+        <label>3. 書き込み開始:</label>
+        <button id="flashBtn" disabled>Flash Firmware</button>
+    </div>
 
-<input type="file" id="hexFile" accept=".hex"><br><br>
+    <div class="status-bar" id="status">Status: Disconnected</div>
+    <div id="log"></div>
+</div>
 
-<button id="connect">Serial Connect</button>
-<button id="start" disabled>Flash Start</button>
-
-<pre id="log"></pre>
-
+<script src="https://cdn.jsdelivr.net/npm/intel-hex@0.1.2/dist/intel-hex.min.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
