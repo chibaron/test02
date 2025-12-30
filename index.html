@@ -22,11 +22,16 @@
       border: 1px solid #0f0;
       padding: 6px 12px;
       cursor: pointer;
+      margin-right: 10px;
     }
 
     button:disabled {
       opacity: 0.5;
       cursor: default;
+    }
+
+    input[type="file"] {
+      margin-right: 10px;
     }
 
     #log, #bootlog {
@@ -37,10 +42,6 @@
       overflow-y: auto;
       white-space: pre-wrap;
       margin-top: 10px;
-    }
-
-    input[type="file"] {
-      margin-top: 6px;
     }
   </style>
 </head>
@@ -55,8 +56,9 @@
   <hr>
 
   <h3>STM32 Bootloader (HEX Download)</h3>
+
   <input type="file" id="hexFile" accept=".hex">
-  <button id="sendHex">Send HEX</button>
+  <button id="sendHex" disabled>Send HEX</button>
 
   <pre id="bootlog"></pre>
 
@@ -65,8 +67,8 @@
        Globals
     ========================= */
 
-    let port;
-    let writer;
+    let port = null;
+    let writer = null;
 
     const logEl = document.getElementById("log");
     const bootlogEl = document.getElementById("bootlog");
@@ -167,7 +169,7 @@
     }
 
     async function stm32WriteMemory(address, data) {
-      // CMD
+      // Write Memory command
       await writer.write(new Uint8Array([0x31, 0xCE]));
 
       // Address
@@ -179,7 +181,7 @@
       ];
       await writer.write(new Uint8Array([...addr, xorChecksum(addr)]));
 
-      // Length + data
+      // Length + Data
       const payload = [data.length - 1, ...data];
       await writer.write(new Uint8Array([...payload, xorChecksum(payload)]));
     }
@@ -195,6 +197,7 @@
         writer = port.writable.getWriter();
 
         log("=== Serial Connected ===\n");
+        document.getElementById("sendHex").disabled = false;
 
         const reader = port.readable.getReader();
         (async function readLoop() {
@@ -216,6 +219,7 @@
 
         await sleep(1000);
 
+        // MSP #1
         const msp1 = [
           0x24, 0x58, 0x3C,
           0x00, 0xF5,
@@ -227,6 +231,7 @@
 
         await sleep(1000);
 
+        // MSP #2
         const msp2 = [
           0x24, 0x58, 0x3C,
           0x00, 0x44,
@@ -243,8 +248,12 @@
 
     document.getElementById("sendHex").onclick = async () => {
       const file = document.getElementById("hexFile").files[0];
-      if (!file || !writer) {
-        blog("HEX file or serial not ready");
+      if (!file) {
+        blog("No HEX file selected");
+        return;
+      }
+      if (!writer) {
+        blog("Serial not connected");
         return;
       }
 
