@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <title>MSP Auto Sender</title>
+  <title>MSP v2 Web Serial Debug Tool</title>
 
   <style>
     body {
@@ -10,6 +10,10 @@
       color: #0f0;
       font-family: monospace;
       margin: 20px;
+    }
+
+    h2 {
+      margin-bottom: 10px;
     }
 
     button {
@@ -22,13 +26,14 @@
 
     button:disabled {
       opacity: 0.5;
+      cursor: default;
     }
 
     #log {
       background: #000;
       border: 1px solid #0f0;
       padding: 10px;
-      height: 300px;
+      height: 360px;
       overflow-y: auto;
       white-space: pre-wrap;
       margin-top: 10px;
@@ -37,22 +42,48 @@
 </head>
 
 <body>
-  <h2>MSP v2 Auto Sender</h2>
+  <h2>MSP v2 Web Serial Debug Tool</h2>
 
   <button id="connect">Connect & Send</button>
 
   <pre id="log"></pre>
 
   <script>
-    const log = (t) => {
-      const el = document.getElementById("log");
-      el.textContent += t;
-      el.scrollTop = el.scrollHeight;
-    };
+    /* =========================
+       Utility
+    ========================= */
+
+    const logEl = document.getElementById("log");
+
+    function log(text) {
+      logEl.textContent += text;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
 
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-    // CRC-8/D5 (MSP v2)
+    function hexDump(bytes) {
+      let out = "";
+      for (let i = 0; i < bytes.length; i++) {
+        if (i % 16 === 0) {
+          out += "\n" + i.toString(16).padStart(4, "0") + ": ";
+        }
+        out += bytes[i].toString(16).padStart(2, "0") + " ";
+      }
+      return out;
+    }
+
+    function asciiDump(bytes) {
+      return Array.from(bytes)
+        .map(b => (b >= 0x20 && b <= 0x7E) ? String.fromCharCode(b) : ".")
+        .join("");
+    }
+
+    /* =========================
+       CRC-8/D5 (MSP v2)
+       poly=0xD5, init=0x00
+    ========================= */
+
     function crc8_d5(bytes) {
       let crc = 0x00;
       for (const b of bytes) {
@@ -65,21 +96,55 @@
       return crc;
     }
 
-    async function sendMSP(port, payload) {
+    /* =========================
+       MSP Send Helper
+    ========================= */
+
+    async function sendMSP(port, payload, label) {
       const writer = port.writable.getWriter();
+
+      log(`\n>>> SEND ${label} (${payload.length} bytes)`);
+      log(hexDump(payload) + "\n");
+
       await writer.write(payload);
       writer.releaseLock();
     }
+
+    /* =========================
+       Main
+    ========================= */
 
     document.getElementById("connect").onclick = async () => {
       try {
         const port = await navigator.serial.requestPort();
         await port.open({ baudRate: 115200 });
 
-        log("Connected\n");
+        log("=== Serial Connected ===\n");
+
+        /* ---- Receiver ---- */
+        const reader = port.readable.getReader();
+        (async function readLoop() {
+          while (true) {
+            try {
+              const { value, done } = await reader.read();
+              if (done) break;
+              if (value) {
+                log(`\n<<< RECV (${value.length} bytes)`);
+                log(hexDump(value));
+                log("\nASCII: " + asciiDump(value) + "\n");
+              }
+            } catch (e) {
+              log("\nRead error: " + e + "\n");
+              break;
+            }
+          }
+        })();
+
+        /* ---- Sequence ---- */
         await sleep(1000);
 
-        // ===== MSP command #1 =====
+        // ===== MSP Command #1 =====
+        // "$X<" + 00 + 245 + 00 02 + 00 FE 11 + CRC(3..10)
         const msp1 = [
           0x24, 0x58, 0x3C, // "$X<"
           0x00,
@@ -87,31 +152,26 @@
           0x00, 0x02,
           0x00, 0xFE, 0x11
         ];
+        msp1.push(crc8_d5(msp1.slice(3)));
 
-        const crc1 = crc8_d5(msp1.slice(3));
-        msp1.push(crc1);
-
-        await sendMSP(port, new Uint8Array(msp1));
-        log("MSP #1 sent\n");
+        await sendMSP(port, new Uint8Array(msp1), "MSP #1");
 
         await sleep(1000);
 
-        // ===== MSP command #2 =====
+        // ===== MSP Command #2 =====
+        // "$X<" + 00 + 68 + 00 00 + CRC(3..8)
         const msp2 = [
           0x24, 0x58, 0x3C, // "$X<"
           0x00,
           0x44,           // 68
           0x00, 0x00
         ];
+        msp2.push(crc8_d5(msp2.slice(3)));
 
-        const crc2 = crc8_d5(msp2.slice(3));
-        msp2.push(crc2);
-
-        await sendMSP(port, new Uint8Array(msp2));
-        log("MSP #2 sent\n");
+        await sendMSP(port, new Uint8Array(msp2), "MSP #2");
 
       } catch (e) {
-        log("Error: " + e + "\n");
+        log("\nERROR: " + e + "\n");
       }
     };
   </script>
