@@ -233,6 +233,10 @@ window.addEventListener('DOMContentLoaded', () => {
             if (!await waitResponse(0x79, 30000)) throw new Error("Erase Timeout/NACK");
             debugLog("Erase Successful.", "success");
 
+            // ★追加：消去後にチップが内部処理を終えるのを待つ
+            debugLog("Waiting for flash controller to stabilize (2s)...", "info");
+            await sleep(2000);
+
             // --- Step 7: Writing Memory (Alignment Fix) ---
             debugLog("Step 7: Writing Memory", "step");
             const CHUNK = 128; // 256より安定しやすい128バイトに変更（8の倍数）
