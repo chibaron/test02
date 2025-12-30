@@ -11,11 +11,7 @@
       font-family: monospace;
       margin: 20px;
     }
-
-    h2, h3 {
-      margin-bottom: 10px;
-    }
-
+    h2, h3 { margin-bottom: 10px; }
     button {
       background: #222;
       color: #0f0;
@@ -24,16 +20,8 @@
       cursor: pointer;
       margin-right: 10px;
     }
-
-    button:disabled {
-      opacity: 0.5;
-      cursor: default;
-    }
-
-    input[type="file"] {
-      margin-right: 10px;
-    }
-
+    button:disabled { opacity: 0.5; }
+    input[type="file"] { margin-right: 10px; }
     #log, #bootlog {
       background: #000;
       border: 1px solid #0f0;
@@ -47,229 +35,204 @@
 </head>
 
 <body>
-  <h2>MSP v2 Web Serial Debug Tool</h2>
+<h2>MSP v2 Web Serial Debug Tool</h2>
 
-  <button id="connect">Connect & Send MSP</button>
+<button id="connect">Connect & Send MSP</button>
+<pre id="log"></pre>
 
-  <pre id="log"></pre>
+<hr>
 
-  <hr>
+<h3>STM32 Bootloader (HEX Download)</h3>
+<input type="file" id="hexFile" accept=".hex">
+<button id="sendHex" disabled>Send HEX</button>
+<pre id="bootlog"></pre>
 
-  <h3>STM32 Bootloader (HEX Download)</h3>
+<script>
+/* =========================
+   Globals
+========================= */
+let port = null;
+let writer = null;
+let reader = null;
 
-  <input type="file" id="hexFile" accept=".hex">
-  <button id="sendHex" disabled>Send HEX</button>
+/* ACK wait queue */
+let ackQueue = [];
 
-  <pre id="bootlog"></pre>
+/* =========================
+   Logging
+========================= */
+const logEl = document.getElementById("log");
+const bootlogEl = document.getElementById("bootlog");
 
-  <script>
-    /* =========================
-       Globals
-    ========================= */
+function log(t) {
+  logEl.textContent += t;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function blog(t) {
+  bootlogEl.textContent += t + "\n";
+  bootlogEl.scrollTop = bootlogEl.scrollHeight;
+}
 
-    let port = null;
-    let writer = null;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-    const logEl = document.getElementById("log");
-    const bootlogEl = document.getElementById("bootlog");
+function hexDump(bytes) {
+  let s = "";
+  for (let i = 0; i < bytes.length; i++) {
+    if (i % 16 === 0) s += "\n" + i.toString(16).padStart(4,"0") + ": ";
+    s += bytes[i].toString(16).padStart(2,"0") + " ";
+  }
+  return s;
+}
 
-    function log(text) {
-      logEl.textContent += text;
-      logEl.scrollTop = logEl.scrollHeight;
+/* =========================
+   CRC-8/D5 (MSP)
+========================= */
+function crc8_d5(bytes) {
+  let crc = 0x00;
+  for (const b of bytes) {
+    crc ^= b;
+    for (let i = 0; i < 8; i++) {
+      crc = (crc & 0x80) ? ((crc << 1) ^ 0xD5) : (crc << 1);
+      crc &= 0xFF;
     }
+  }
+  return crc;
+}
 
-    function blog(text) {
-      bootlogEl.textContent += text + "\n";
-      bootlogEl.scrollTop = bootlogEl.scrollHeight;
+/* =========================
+   ACK / NACK handling
+========================= */
+function waitAck(timeout = 1000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject("ACK timeout");
+    }, timeout);
+    ackQueue.push({ resolve, reject, timer });
+  });
+}
+
+function handleAckByte(b) {
+  if (ackQueue.length === 0) return false;
+
+  const q = ackQueue.shift();
+  clearTimeout(q.timer);
+
+  if (b === 0x79) q.resolve();
+  else if (b === 0x1F) q.reject("NACK received");
+  else q.reject("Unexpected byte: 0x" + b.toString(16));
+
+  return true;
+}
+
+/* =========================
+   Intel HEX parser
+========================= */
+function parseHex(text) {
+  const lines = text.trim().split(/\r?\n/);
+  let upper = 0;
+  const records = [];
+  for (const l of lines) {
+    if (!l.startsWith(":")) continue;
+    const len  = parseInt(l.substr(1,2),16);
+    const addr = parseInt(l.substr(3,4),16);
+    const type = parseInt(l.substr(7,2),16);
+    if (type === 0x04) {
+      upper = parseInt(l.substr(9,4),16) << 16;
+    } else if (type === 0x00) {
+      const data = [];
+      for (let i=0;i<len;i++) {
+        data.push(parseInt(l.substr(9+i*2,2),16));
+      }
+      records.push({ address: upper + addr, data });
     }
+  }
+  return records;
+}
 
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+/* =========================
+   STM32 Bootloader
+========================= */
+function xorChecksum(arr) {
+  return arr.reduce((a,b)=>a^b,0);
+}
 
-    function hexDump(bytes) {
-      let out = "";
-      for (let i = 0; i < bytes.length; i++) {
-        if (i % 16 === 0) {
-          out += "\n" + i.toString(16).padStart(4, "0") + ": ";
+async function stm32WriteMemory(address, data) {
+  // CMD
+  await writer.write(new Uint8Array([0x31, 0xCE]));
+  await waitAck();
+
+  // Address
+  const addr = [
+    (address>>24)&0xFF,
+    (address>>16)&0xFF,
+    (address>>8)&0xFF,
+    address&0xFF
+  ];
+  await writer.write(new Uint8Array([...addr, xorChecksum(addr)]));
+  await waitAck();
+
+  // Data
+  const payload = [data.length-1, ...data];
+  await writer.write(new Uint8Array([...payload, xorChecksum(payload)]));
+  await waitAck();
+}
+
+/* =========================
+   UI handlers
+========================= */
+document.getElementById("connect").onclick = async () => {
+  port = await navigator.serial.requestPort();
+  await port.open({ baudRate: 115200 });
+  writer = port.writable.getWriter();
+  reader = port.readable.getReader();
+
+  document.getElementById("sendHex").disabled = false;
+  log("=== Serial Connected ===\n");
+
+  (async function readLoop() {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+
+      for (const b of value) {
+        if (!handleAckByte(b)) {
+          log(`\n<<< ${b.toString(16).padStart(2,"0")}`);
         }
-        out += bytes[i].toString(16).padStart(2, "0") + " ";
       }
-      return out;
     }
+  })();
 
-    function asciiDump(bytes) {
-      return Array.from(bytes)
-        .map(b => (b >= 0x20 && b <= 0x7E) ? String.fromCharCode(b) : ".")
-        .join("");
+  await sleep(1000);
+
+  const msp1 = [0x24,0x58,0x3C,0x00,0xF5,0x00,0x02,0x00,0xFE,0x11];
+  msp1.push(crc8_d5(msp1.slice(3)));
+  await writer.write(new Uint8Array(msp1));
+
+  await sleep(1000);
+
+  const msp2 = [0x24,0x58,0x3C,0x00,0x44,0x00,0x00,0x00];
+  msp2.push(crc8_d5(msp2.slice(3)));
+  await writer.write(new Uint8Array(msp2));
+};
+
+document.getElementById("sendHex").onclick = async () => {
+  const file = document.getElementById("hexFile").files[0];
+  if (!file) return;
+
+  const records = parseHex(await file.text());
+  blog(`HEX records: ${records.length}`);
+
+  try {
+    for (const r of records) {
+      blog(`Write 0x${r.address.toString(16)} (${r.data.length} bytes)`);
+      await stm32WriteMemory(r.address, r.data);
     }
-
-    /* =========================
-       CRC-8/D5 (MSP v2)
-    ========================= */
-
-    function crc8_d5(bytes) {
-      let crc = 0x00;
-      for (const b of bytes) {
-        crc ^= b;
-        for (let i = 0; i < 8; i++) {
-          crc = (crc & 0x80) ? ((crc << 1) ^ 0xD5) : (crc << 1);
-          crc &= 0xFF;
-        }
-      }
-      return crc;
-    }
-
-    /* =========================
-       MSP Send
-    ========================= */
-
-    async function sendMSP(payload, label) {
-      log(`\n>>> SEND ${label} (${payload.length} bytes)`);
-      log(hexDump(payload) + "\n");
-      await writer.write(payload);
-    }
-
-    /* =========================
-       Intel HEX Parser
-    ========================= */
-
-    function parseHex(text) {
-      const lines = text.trim().split(/\r?\n/);
-      let upper = 0;
-      const records = [];
-
-      for (const line of lines) {
-        if (!line.startsWith(":")) continue;
-
-        const len  = parseInt(line.substr(1, 2), 16);
-        const addr = parseInt(line.substr(3, 4), 16);
-        const type = parseInt(line.substr(7, 2), 16);
-
-        if (type === 0x04) {
-          upper = parseInt(line.substr(9, 4), 16) << 16;
-        } else if (type === 0x00) {
-          const data = [];
-          for (let i = 0; i < len; i++) {
-            data.push(parseInt(line.substr(9 + i * 2, 2), 16));
-          }
-          records.push({
-            address: upper + addr,
-            data
-          });
-        }
-      }
-      return records;
-    }
-
-    /* =========================
-       STM32 Bootloader (UART)
-    ========================= */
-
-    function xorChecksum(arr) {
-      return arr.reduce((a, b) => a ^ b, 0x00);
-    }
-
-    async function stm32WriteMemory(address, data) {
-      // Write Memory command
-      await writer.write(new Uint8Array([0x31, 0xCE]));
-
-      // Address
-      const addr = [
-        (address >> 24) & 0xFF,
-        (address >> 16) & 0xFF,
-        (address >> 8) & 0xFF,
-        address & 0xFF
-      ];
-      await writer.write(new Uint8Array([...addr, xorChecksum(addr)]));
-
-      // Length + Data
-      const payload = [data.length - 1, ...data];
-      await writer.write(new Uint8Array([...payload, xorChecksum(payload)]));
-    }
-
-    /* =========================
-       UI Handlers
-    ========================= */
-
-    document.getElementById("connect").onclick = async () => {
-      try {
-        port = await navigator.serial.requestPort();
-        await port.open({ baudRate: 115200 });
-        writer = port.writable.getWriter();
-
-        log("=== Serial Connected ===\n");
-        document.getElementById("sendHex").disabled = false;
-
-        const reader = port.readable.getReader();
-        (async function readLoop() {
-          while (true) {
-            try {
-              const { value, done } = await reader.read();
-              if (done) break;
-              if (value) {
-                log(`\n<<< RECV (${value.length} bytes)`);
-                log(hexDump(value));
-                log("\nASCII: " + asciiDump(value) + "\n");
-              }
-            } catch (e) {
-              log("\nRead error: " + e + "\n");
-              break;
-            }
-          }
-        })();
-
-        await sleep(1000);
-
-        // MSP #1
-        const msp1 = [
-          0x24, 0x58, 0x3C,
-          0x00, 0xF5,
-          0x00, 0x02,
-          0x00, 0xFE, 0x11
-        ];
-        msp1.push(crc8_d5(msp1.slice(3)));
-        await sendMSP(new Uint8Array(msp1), "MSP #1");
-
-        await sleep(1000);
-
-        // MSP #2
-        const msp2 = [
-          0x24, 0x58, 0x3C,
-          0x00, 0x44,
-          0x00, 0x00,
-          0x00
-        ];
-        msp2.push(crc8_d5(msp2.slice(3)));
-        await sendMSP(new Uint8Array(msp2), "MSP #2");
-
-      } catch (e) {
-        log("\nERROR: " + e + "\n");
-      }
-    };
-
-    document.getElementById("sendHex").onclick = async () => {
-      const file = document.getElementById("hexFile").files[0];
-      if (!file) {
-        blog("No HEX file selected");
-        return;
-      }
-      if (!writer) {
-        blog("Serial not connected");
-        return;
-      }
-
-      const text = await file.text();
-      const records = parseHex(text);
-
-      blog(`HEX records: ${records.length}`);
-
-      for (const r of records) {
-        blog(`Write 0x${r.address.toString(16)} (${r.data.length} bytes)`);
-        await stm32WriteMemory(r.address, r.data);
-        await sleep(5);
-      }
-
-      blog("HEX download completed");
-    };
-  </script>
+    blog("HEX download SUCCESS");
+  } catch (e) {
+    blog("ERROR: " + e);
+  }
+};
+</script>
 </body>
 </html>
