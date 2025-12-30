@@ -140,27 +140,41 @@ window.addEventListener('DOMContentLoaded', () => {
             await writer.write(new Uint8Array([0x02, 0xFD]));
             if (!await waitResponse(0x79)) throw new Error("Get ID NACK");
 
-            // --- Step 6: Erase ---
-            debugLog("Step 6: Erasing...", "step");
-            // Extended Erase コマンド送信
+            // --- Step 6: Erase (ピンポイント消去) ---
+            debugLog("Step 6: Erasing specified pages...", "step");
+            
+            // 1. Extended Eraseコマンド送信
             const eraseCmd = [0x44, 0xBB];
             await writer.write(new Uint8Array(eraseCmd));
             debugLog(`TX > ${eraseCmd.map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')}`, "tx");
             
             if (await waitResponse(0x79)) {
-                debugLog("ACK received for Erase Command. Sending Global Erase...", "info");
-                // Global Erase パラメータ送信 (0xFFFF + Checksum 0x00)
-                const globalEraseParams = [0xFF, 0xFF, 0x00];
-                await writer.write(new Uint8Array(globalEraseParams));
-                debugLog(`TX > ${globalEraseParams.map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')}`, "tx");
+                debugLog("ACK received for Erase Command.", "info");
                 
-                debugLog("Waiting for erase to complete (this may take a few seconds)...", "info");
-                if (!await waitResponse(0x79, 10000)) { // 消去は長いので10秒待機
-                    throw new Error("Erase Timeout or NACK");
+                // Pythonコードのロジックを再現：
+                // 今回は簡単のため「ページ数 0x0000 (1ページ分)」+「ページ番号 0x0000」を送って
+                // チップが反応するかテストします。
+                // 本来はループで回すべきですが、まず最小構成でACKを確認します。
+                
+                // [N-1 bytes high, N-1 bytes low, Page High, Page Low, Checksum]
+                // 1ページ(N=1)消去なら 0x00 0x00
+                const numPagesMinusOne = [0x00, 0x00]; 
+                const pageToErase = [0x00, 0x00]; // 0ページ目
+                const erasePayload = [...numPagesMinusOne, ...pageToErase];
+                const cs = calcCS(erasePayload);
+                
+                await writer.write(new Uint8Array([...erasePayload, cs]));
+                debugLog(`TX > ${[...erasePayload, cs].map(b=>b.toString(16).toUpperCase().padStart(2,'0')).join(' ')}`, "tx");
+
+                debugLog("Waiting for erase ACK...", "info");
+                // タイムアウトを30秒に延長 (消去はチップによって非常に遅いため)
+                if (!await waitResponse(0x79, 30000)) {
+                    // もしNACK(0x1F)が返ってきた場合、Readout Protectionの可能性があります
+                    throw new Error("Erase failed. Device might be Read-Protected or Timeout.");
                 }
                 debugLog("Erase Successful.", "success");
             } else {
-                throw new Error("Erase Command NACK");
+                throw new Error("Erase Command (0x44) NACK. Protocol error.");
             }
 
             // --- Step 7: Write Memory ---
