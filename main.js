@@ -26,6 +26,8 @@ connectBtn.onclick = async () => {
     disconnectBtn.disabled = false;
     connectBtn.disabled = true;
 
+    await writer.write(new TextEncoder().encode("#"));
+
     readLoop();
   } catch (e) {
     log(`Error: ${e}\n`);
