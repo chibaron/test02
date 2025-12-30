@@ -242,37 +242,44 @@ window.addEventListener('DOMContentLoaded', () => {
             const CHUNK = 128; // 256より安定しやすい128バイトに変更（8の倍数）
             
             for (let i = 0; i < firmware.length; i += CHUNK) {
-                // 残りデータがCHUNKより小さい場合、0xFFで埋めて8の倍数にする
-                let rawChunk = firmware.slice(i, i + CHUNK);
-                if (rawChunk.length % 8 !== 0) {
-                    let alignedLen = Math.ceil(rawChunk.length / 8) * 8;
-                    let newChunk = new Uint8Array(alignedLen).fill(0xFF);
-                    newChunk.set(rawChunk);
-                    rawChunk = newChunk;
-                }
-                
                 const curAddr = minAddr + i;
+                const chunk = firmware.slice(i, i + CHUNK);
 
-                // A. Write Command
+                // 1. Write Command 送信
                 await writer.write(new Uint8Array([0x31, 0xCE]));
-                if (!await waitResponse(0x79)) throw new Error("Write Cmd NACK");
-
-                // B. Address (ここがNACKになった場所)
-                const aB = [(curAddr >> 24) & 0xFF, (curAddr >> 16) & 0xFF, (curAddr >> 8) & 0xFF, curAddr & 0xFF];
-                await writer.write(new Uint8Array([...aB, calcCS(aB)]));
                 if (!await waitResponse(0x79)) {
-                    debugLog(`Failed at Address: 0x${curAddr.toString(16).toUpperCase()}`, "err");
+                    debugLog("Write Command (0x31) rejected. Try 0x11?", "err");
+                    throw new Error("CMD NACK");
+                }
+
+                // 2. Address 送信
+                const aB = [
+                    (curAddr >> 24) & 0xFF,
+                    (curAddr >> 16) & 0xFF,
+                    (curAddr >> 8) & 0xFF,
+                    curAddr & 0xFF
+                ];
+                const addrChecksum = calcCS(aB);
+                
+                // ★ Python のように一括ではなく、少し丁寧に送ってみる
+                await writer.write(new Uint8Array([...aB, addrChecksum]));
+                
+                // アドレスに対するレスポンスを待つ
+                if (!await waitResponse(0x79)) {
+                    debugLog(`Address 0x${curAddr.toString(16).toUpperCase()} rejected.`, "err");
+                    debugLog("Check: Is this address erased? Is it within flash bounds?", "info");
                     throw new Error("Addr NACK");
                 }
 
-                // C. Data
-                const dataPL = [rawChunk.length - 1, ...rawChunk];
-                await writer.write(new Uint8Array([...dataPL, calcCS(dataPL)]));
+                // 3. Data 送信
+                const dataLenByte = chunk.length - 1;
+                const dataPayload = [dataLenByte, ...chunk];
+                const dataChecksum = calcCS(dataPayload);
+                
+                await writer.write(new Uint8Array([...dataPayload, dataChecksum]));
                 if (!await waitResponse(0x79)) throw new Error("Data NACK");
 
-                if (i % 2048 === 0 || i + CHUNK >= firmware.length) {
-                    debugLog(`Progress: ${Math.round((i/firmware.length)*100)}% (${i}/${firmware.length})`);
-                }
+                if (i % 2048 === 0) debugLog(`Progress: ${i}/${firmware.length}`);
             }
 
             debugLog("--- FLASH COMPLETED SUCCESSFULLY ---", "success");
