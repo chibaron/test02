@@ -140,26 +140,34 @@ window.addEventListener('DOMContentLoaded', () => {
             await writer.write(new Uint8Array([0x02, 0xFD]));
             if (!await waitResponse(0x79)) throw new Error("Get ID NACK");
 
-            // --- Step 6: Erase (Pythonロジックを正確に再現) ---
+            // --- Step 6: Erase (正確なページ計算版) ---
             debugLog("Step 6: Calculating and Erasing Pages...", "step");
 
             const PAGE_SIZE = 2048; // STM32G4: 2KB
-            const startPage = Math.floor((FLASH_BASE - FLASH_BASE) / PAGE_SIZE); 
-            const endPage = Math.floor((firmware.length + (PAGE_SIZE - 1)) / PAGE_SIZE);
             
-            // 消去するページリストを作成
+            // Intel HEXから解析したバイナリの「実際の開始位置」を確認
+            // ※parseHex関数でFLASH_BASE（0x08000000）からのオフセットで管理している前提
+            const startAddr = FLASH_BASE; 
+            const endAddr = FLASH_BASE + firmware.length;
+
+            // ページ番号の算出
+            // ページ番号 = (絶対アドレス - フラッシュ開始アドレス) / ページサイズ
+            const startPage = Math.floor((startAddr - 0x08000000) / PAGE_SIZE);
+            const endPage = Math.floor((endAddr - 0x08000000 - 1) / PAGE_SIZE);
+            
             let pages = [];
             for (let p = startPage; p <= endPage; p++) {
                 pages.push(p);
             }
-            debugLog(`Target pages to erase: ${startPage} to ${endPage} (${pages.length} pages)`, "info");
+            debugLog(`Address: 0x${startAddr.toString(16)} - 0x${endAddr.toString(16)}`, "info");
+            debugLog(`Target pages: ${startPage} to ${endPage} (${pages.length} pages)`, "info");
 
-            // Extended Erase コマンド送信
+            // 1. Extended Erase コマンド送信
             await writer.write(new Uint8Array([0x44, 0xBB]));
             if (!await waitResponse(0x79)) throw new Error("Erase Command NACK");
 
-            // ペイロード作成: [NumberOfPages High, NumberOfPages Low, Page0 High, Page0 Low, Page1 High, Page1 Low, ...]
-            // NumberOfPages は (ページ数 - 1) を送る仕様
+            // 2. ペイロード作成
+            // [N-1 High, N-1 Low, Page0 High, Page0 Low, ...]
             const numPagesMinusOne = pages.length - 1;
             let payload = [
                 (numPagesMinusOne >> 8) & 0xFF,
@@ -171,15 +179,17 @@ window.addEventListener('DOMContentLoaded', () => {
                 payload.push(page & 0xFF);
             }
 
+            // チェックサムの計算
             const cs = calcCS(payload);
+            
+            // 送信
             await writer.write(new Uint8Array([...payload, cs]));
             debugLog(`TX Erase Payload > ${payload.length} bytes (CheckSum: 0x${cs.toString(16).toUpperCase()})`, "tx");
 
             debugLog("Waiting for pages erase ACK...", "info");
-            // ページ数が多い場合は時間がかかるため、しっかり待つ
+            // 消去時間はページ数に比例するため、十分なタイムアウトを設定
             if (!await waitResponse(0x79, 30000)) {
-                // ここで失敗する場合、チップが Readout Protection Level 1 になっている可能性が高いです
-                throw new Error("Erase failed. If this persists, try 'Full Chip Erase' or check RDP status.");
+                throw new Error("Erase failed. Possible reasons: Wrong page range, Write Protection, or RDP.");
             }
             debugLog("Erase Successful.", "success");
 
