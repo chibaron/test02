@@ -182,7 +182,7 @@ window.addEventListener('DOMContentLoaded', () => {
             mspBoot.push(msp_crc8_d5(mspBoot.slice(3, 8)));
             await writeData(mspBoot);
             debugLog("Waiting for reboot to Bootloader...", "info");
-            await sleep(3000); // デバイスが再起動するのをしっかり待つ
+            await sleep(1000); // デバイスが再起動するのをしっかり待つ
 
             // 重要：ここで一度リーダーをリセット（既存のバッファをクリア）したい
             // Web Serialでは直接クリアできないため、空読みをループさせる
