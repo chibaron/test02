@@ -233,28 +233,42 @@ window.addEventListener('DOMContentLoaded', () => {
             if (!await waitResponse(0x79, 30000)) throw new Error("Erase Timeout/NACK");
             debugLog("Erase Successful.", "success");
 
-            // --- Step 7: Write ---
+            // --- Step 7: Writing Memory (Alignment Fix) ---
             debugLog("Step 7: Writing Memory", "step");
-            const CHUNK = 256;
+            const CHUNK = 128; // 256より安定しやすい128バイトに変更（8の倍数）
+            
             for (let i = 0; i < firmware.length; i += CHUNK) {
-                const chunk = firmware.slice(i, i + CHUNK);
+                // 残りデータがCHUNKより小さい場合、0xFFで埋めて8の倍数にする
+                let rawChunk = firmware.slice(i, i + CHUNK);
+                if (rawChunk.length % 8 !== 0) {
+                    let alignedLen = Math.ceil(rawChunk.length / 8) * 8;
+                    let newChunk = new Uint8Array(alignedLen).fill(0xFF);
+                    newChunk.set(rawChunk);
+                    rawChunk = newChunk;
+                }
+                
                 const curAddr = minAddr + i;
 
-                // Write Command
+                // A. Write Command
                 await writer.write(new Uint8Array([0x31, 0xCE]));
                 if (!await waitResponse(0x79)) throw new Error("Write Cmd NACK");
 
-                // Address
+                // B. Address (ここがNACKになった場所)
                 const aB = [(curAddr >> 24) & 0xFF, (curAddr >> 16) & 0xFF, (curAddr >> 8) & 0xFF, curAddr & 0xFF];
                 await writer.write(new Uint8Array([...aB, calcCS(aB)]));
-                if (!await waitResponse(0x79)) throw new Error("Addr NACK");
+                if (!await waitResponse(0x79)) {
+                    debugLog(`Failed at Address: 0x${curAddr.toString(16).toUpperCase()}`, "err");
+                    throw new Error("Addr NACK");
+                }
 
-                // Data
-                const dataPL = [chunk.length - 1, ...chunk];
+                // C. Data
+                const dataPL = [rawChunk.length - 1, ...rawChunk];
                 await writer.write(new Uint8Array([...dataPL, calcCS(dataPL)]));
                 if (!await waitResponse(0x79)) throw new Error("Data NACK");
 
-                if (i % 2048 === 0) debugLog(`Progress: ${Math.round((i/firmware.length)*100)}%`);
+                if (i % 2048 === 0 || i + CHUNK >= firmware.length) {
+                    debugLog(`Progress: ${Math.round((i/firmware.length)*100)}% (${i}/${firmware.length})`);
+                }
             }
 
             debugLog("--- FLASH COMPLETED SUCCESSFULLY ---", "success");
