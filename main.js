@@ -12,6 +12,10 @@ function log(text) {
   terminal.scrollTop = terminal.scrollHeight;
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 connectBtn.onclick = async () => {
   try {
     port = await navigator.serial.requestPort();
@@ -26,7 +30,12 @@ connectBtn.onclick = async () => {
     disconnectBtn.disabled = false;
     connectBtn.disabled = true;
 
-    await writer.write(new TextEncoder().encode("#"));
+    await sleep(1000);               // 1秒待つ
+    await writer.write(
+      new TextEncoder().encode("#")
+    );
+    await sleep(1000);               // 1秒待つ
+    log("> #\n");                    // 送信表示（任意）
 
     readLoop();
   } catch (e) {
