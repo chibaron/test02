@@ -13,11 +13,9 @@
         #log { 
             width: 100%; height: 500px; background: #000; color: #dcdcdc; 
             padding: 12px; font-family: 'Consolas', 'Monaco', monospace; overflow-y: scroll; 
-            white-space: pre-wrap; border: 1px solid #333; font-size: 11.5px; line-height: 1.4;
+            white-space: pre-wrap; border: 1px solid #333; font-size: 13px; line-height: 1.4;
         }
 
-        .tx { color: #4fc1ff; } 
-        .rx { color: #dcdcaa; } 
         .success { color: #6a9955; font-weight: bold; }
         .err { color: #f44747; font-weight: bold; }
         .info { color: #808080; }
@@ -79,7 +77,6 @@ let rxBuffer = [];
 
 const sleep = (ms) => new Promise(res => setTimeout(res, ms));
 const calcCS = (data) => data.reduce((a, b) => a ^ b, 0) & 0xFF;
-const toHex = (arr) => Array.from(arr).map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
 
 function mspCRC(data) {
     let crc = 0;
@@ -96,15 +93,10 @@ function debugLog(msg, type = '') {
     const log = document.getElementById('log');
     const div = document.createElement('div');
     div.className = type;
-    const now = new Date().toLocaleTimeString('en-US', { hour12: false, fractionDigits: 3 });
+    const now = new Date().toLocaleTimeString('en-US', { hour12: false });
     div.textContent = `[${now}] ${msg}`;
     log.appendChild(div);
     log.scrollTop = log.scrollHeight;
-}
-
-async function writeAndLog(data) {
-    debugLog(`TX > ${toHex(data)}`, 'tx');
-    await writer.write(new Uint8Array(data));
 }
 
 async function readLoop() {
@@ -113,12 +105,11 @@ async function readLoop() {
             const { value, done } = await reader.read();
             if (done) break;
             if (value) {
-                debugLog(`RX < ${toHex(value)}`, 'rx');
                 rxBuffer.push(...value);
             }
         }
     } catch (e) { 
-        if (readIteration) debugLog("READER STREAM ERROR: " + e.message, "err"); 
+        if (readIteration) debugLog("READER ERROR: " + e.message, "err"); 
     } finally {
         if (reader) reader.releaseLock();
     }
@@ -130,19 +121,15 @@ async function waitACK(timeout = 2000) {
         if (rxBuffer.length > 0) {
             const b = rxBuffer.shift();
             if (b === BOOT_CMD.ACK) return true;
-            if (b === BOOT_CMD.NACK) {
-                debugLog("!! NACK (0x1F) RECEIVED FROM TARGET !!", "err");
-                return false;
-            }
+            if (b === BOOT_CMD.NACK) return false;
         }
-        await sleep(5);
+        await sleep(2);
     }
-    debugLog("!! RESPONSE TIMEOUT !!", "err");
     return false;
 }
 
 async function closePort() {
-    debugLog("Terminating connection and releasing system port...", "info");
+    debugLog("Releasing port resources...", "info");
     readIteration = false; 
     try {
         if (reader) await reader.cancel();
@@ -150,7 +137,7 @@ async function closePort() {
         if (port) await port.close();
         debugLog("PORT DISCONNECTED.", "success");
     } catch (e) {
-        debugLog("DISCONNECTION FAULT: " + e.message, "err");
+        debugLog("DISCONNECTION ERROR: " + e.message, "err");
     }
     document.getElementById('flashBtn').disabled = true;
     port = null; writer = null; reader = null;
@@ -187,9 +174,9 @@ document.getElementById('connectBtn').onclick = async () => {
         writer = port.writable.getWriter();
         reader = port.readable.getReader();
         readLoop();
-        debugLog("OPENOSD-X INTERFACE CONNECTED.", "success");
+        debugLog("OPENOSD-X CONNECTED.", "success");
         document.getElementById('flashBtn').disabled = false;
-    } catch (e) { debugLog("INTERFACE ERROR: " + e.message, "err"); }
+    } catch (e) { debugLog("CONNECTION ERROR: " + e.message, "err"); }
 };
 
 document.getElementById('flashBtn').onclick = async () => {
@@ -197,72 +184,62 @@ document.getElementById('flashBtn').onclick = async () => {
     if (!file || !port) return;
 
     try {
-        debugLog("--- INITIATING OPENOSD-X FLASH SEQUENCE ---", "step");
+        debugLog("--- STARTING FLASH SEQUENCE ---", "step");
         const { memory, minAddr, maxAddr } = parseHex(await file.text());
-        debugLog(`IMAGE LOADED: 0x${minAddr.toString(16)} - 0x${maxAddr.toString(16)} (${maxAddr-minAddr} bytes)`, "info");
+        debugLog(`LOADED: 0x${minAddr.toString(16).toUpperCase()} - 0x${maxAddr.toString(16).toUpperCase()} (${maxAddr-minAddr} bytes)`, "info");
 
-        // --- MSP Passthrough ---
-        debugLog("PHASE 1: BRIDGE INITIALIZATION (MSP)", "step");
+        // PHASE 1: MSP
+        debugLog("INITIALIZING BRIDGE...", "info");
         let p = [0x24, 0x58, 0x3C, 0x00, 0xF5, 0x00, 0x02, 0x00, 0xFE, 0x11];
         p.push(mspCRC(p.slice(3, 10)));
-        await writeAndLog(p);
+        await writer.write(new Uint8Array(p));
         await sleep(1000);
 
-        // --- MSP Bootloader Start ---
-        debugLog("PHASE 2: INVOKING SYSTEM BOOTLOADER", "step");
+        // PHASE 2: Bootloader
+        debugLog("INVOKING BOOTLOADER...", "info");
         let b = [0x24, 0x58, 0x3C, 0x00, 0x44, 0x00, 0x00, 0x00];
         b.push(mspCRC(b.slice(3, 8)));
-        await writeAndLog(b);
-        debugLog("System reset in progress (1500ms)...", "info");
+        await writer.write(new Uint8Array(b));
         await sleep(1500);
         rxBuffer = []; 
 
-        // --- Sync ---
-        debugLog("PHASE 3: UART BAUD-RATE SYNCHRONIZATION", "step");
+        // PHASE 3: Sync
+        debugLog("SYNCHRONIZING UART...", "info");
         let synced = false;
         for(let i=0; i<5; i++) {
-            debugLog(`SYNC ATTEMPT ${i+1}...`);
             await writer.write(new Uint8Array([0x7F]));
             if (await waitACK(500)) { synced = true; break; }
         }
-        if (!synced) throw new Error("SYNC FAILED: TARGET NOT RESPONDING TO 0x7F.");
-        debugLog("SYNC SUCCESSFUL.", "success");
+        if (!synced) throw new Error("SYNC FAILED.");
 
-        // --- Get ID ---
-        debugLog("PHASE 4: DEVICE IDENTIFICATION", "step");
-        await writeAndLog([BOOT_CMD.GET_ID, BOOT_CMD.GET_ID ^ 0xFF]);
-        if (!await waitACK()) throw new Error("ID REQUEST DENIED.");
-        
-        while(rxBuffer.length < 1) await sleep(10);
+        // PHASE 4: ID
+        await writer.write(new Uint8Array([BOOT_CMD.GET_ID, BOOT_CMD.GET_ID ^ 0xFF]));
+        if (!await waitACK()) throw new Error("ID REJECTED.");
+        while(rxBuffer.length < 1) await sleep(5);
         const idLen = rxBuffer.shift();
-        const idData = [];
         for(let i=0; i<=idLen; i++) {
-            while(rxBuffer.length < 1) await sleep(10);
-            idData.push(rxBuffer.shift());
+            while(rxBuffer.length < 1) await sleep(5);
+            rxBuffer.shift();
         }
         await waitACK(); 
-        debugLog(`TARGET PRODUCT ID: 0x${toHex(idData)}`, "success");
+        debugLog("DEVICE RECOGNIZED.", "success");
 
-        // --- Erase ---
+        // PHASE 5: Erase
         const startPage = Math.floor((minAddr - G4_CONF.FLASH_BASE) / G4_CONF.PAGE_SIZE);
         const endPage = Math.floor((maxAddr - G4_CONF.FLASH_BASE - 1) / G4_CONF.PAGE_SIZE);
-        const totalPages = endPage - startPage + 1;
-        debugLog(`PHASE 5: PERFORMING FLASH ERASE (${totalPages} PAGES)`, "step");
+        debugLog(`ERASING FLASH...`, "step");
 
         for (let p = startPage; p <= endPage; p++) {
-            debugLog(`ERASING PAGE ID: ${p}...`);
-            await writeAndLog([BOOT_CMD.EXTENDED_ERASE, BOOT_CMD.EXTENDED_ERASE ^ 0xFF]);
-            if (!await waitACK()) throw new Error(`ERASE FAILED AT PAGE ${p}`);
-            
+            await writer.write(new Uint8Array([BOOT_CMD.EXTENDED_ERASE, BOOT_CMD.EXTENDED_ERASE ^ 0xFF]));
+            if (!await waitACK()) throw new Error(`ERASE CMD FAILED AT PAGE ${p}`);
             const payload = [0x00, 0x00, (p >> 8) & 0xFF, p & 0xFF];
-            await writeAndLog([...payload, calcCS(payload)]);
+            await writer.write(new Uint8Array([...payload, calcCS(payload)]));
             if (!await waitACK(5000)) throw new Error(`ERASE TIMEOUT AT PAGE ${p}`);
         }
-        debugLog("MEMORY PURGE COMPLETED.", "success");
-        await sleep(500);
+        debugLog("ERASE COMPLETED.", "success");
 
-        // --- Write ---
-        debugLog("PHASE 6: DATA TRANSMISSION & FLASH WRITE", "step");
+        // PHASE 6: Write
+        debugLog("WRITING FIRMWARE...", "step");
         const totalSize = maxAddr - minAddr;
         let written = 0;
         let lastLogPercent = -10;
@@ -273,34 +250,37 @@ document.getElementById('flashBtn').onclick = async () => {
                 chunk.push(memory.get(addr + j) ?? 0xFF);
             }
 
-            await writeAndLog([BOOT_CMD.WRITE_MEMORY, BOOT_CMD.WRITE_MEMORY ^ 0xFF]);
+            await writer.write(new Uint8Array([BOOT_CMD.WRITE_MEMORY, BOOT_CMD.WRITE_MEMORY ^ 0xFF]));
             if (!await waitACK()) throw new Error("WRITE CMD NACK.");
 
             const aB = [(addr >> 24) & 0xFF, (addr >> 16) & 0xFF, (addr >> 8) & 0xFF, addr & 0xFF];
-            await writeAndLog([...aB, calcCS(aB)]);
-            if (!await waitACK()) throw new Error(`ADDRESS FAULT AT 0x${addr.toString(16)}`);
+            await writer.write(new Uint8Array([...aB, calcCS(aB)]));
+            if (!await waitACK()) throw new Error(`ADDR ERROR AT 0x${addr.toString(16)}`);
 
             const dPL = [chunk.length - 1, ...chunk];
-            await writeAndLog([...dPL, calcCS(dPL)]);
-            if (!await waitACK()) throw new Error(`DATA WRITE REJECTED AT 0x${addr.toString(16)}`);
+            await writer.write(new Uint8Array([...dPL, calcCS(dPL)]));
+            if (!await waitACK()) throw new Error(`DATA ERROR AT 0x${addr.toString(16)}`);
 
             written += chunk.length;
             const percent = Math.floor((written / totalSize) * 100);
+            
+            // Fast UI update
             document.getElementById('progressFill').style.width = `${percent}%`;
-            document.getElementById('progressText').textContent = `${percent}% (${written}/${totalSize} BYTES)`;
+            document.getElementById('progressText').textContent = `${percent}% (${written}/${totalSize})`;
 
+            // Low frequency logging
             if (percent >= lastLogPercent + 10) {
-                debugLog(`>>> FLASH PROGRESS: ${percent}% <<<`, "info");
+                debugLog(`FLASH PROGRESS: ${percent}%`, "info");
                 lastLogPercent = percent;
             }
         }
 
-        debugLog("--- FLASHING PROCESS COMPLETED SUCCESSFULLY ---", "success");
-        alert("PROCESS FINISHED. PORT HAS BEEN RELEASED.");
+        debugLog("FLASH COMPLETED SUCCESSFULLY!", "success");
+        alert("FLASHING COMPLETED. PORT DISCONNECTED.");
 
     } catch (e) {
-        debugLog("FATAL SYSTEM ERROR: " + e.message, "err");
-        alert("CRITICAL ERROR: " + e.message);
+        debugLog("CRITICAL ERROR: " + e.message, "err");
+        alert("ERROR: " + e.message);
     } finally {
         await closePort();
     }
