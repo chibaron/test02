@@ -1,220 +1,299 @@
 <!DOCTYPE html>
-<html lang="ja">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>STM32 Web Flasher (GitHub Release Integration)</title>
+    <title>OpenOSD-X Web Flasher</title>
     <style>
-        body { font-family: 'Segoe UI', sans-serif; background: #1e1e1e; color: #d4d4d4; padding: 20px; }
-        .container { max-width: 900px; margin: auto; background: #252526; padding: 25px; border-radius: 10px; border: 1px solid #444; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1e1e1e; color: #d4d4d4; padding: 20px; line-height: 1.5; }
+        .container { max-width: 1000px; margin: auto; background: #252526; padding: 25px; border-radius: 8px; border: 1px solid #444; }
+        h2 { color: #569cd6; margin-top: 0; border-bottom: 1px solid #444; padding-bottom: 10px; }
+        .card { background: #333; padding: 15px; border-radius: 6px; margin-bottom: 20px; border: 1px solid #444; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        
         #log { 
-            width: 100%; height: 400px; background: #000; color: #dcdcdc; 
-            padding: 15px; font-family: 'Consolas', monospace; overflow-y: scroll; 
-            white-space: pre-wrap; border: 1px solid #333; font-size: 12.5px; margin-top: 15px;
+            width: 100%; height: 450px; background: #000; color: #dcdcdc; 
+            padding: 12px; font-family: 'Consolas', 'Monaco', monospace; overflow-y: scroll; 
+            white-space: pre-wrap; border: 1px solid #333; font-size: 13px; line-height: 1.4;
         }
-        .tx { color: #4fc1ff; } .rx { color: #dcdcaa; } .err { color: #f44747; font-weight: bold; }
-        .success { color: #6a9955; font-weight: bold; } .step { color: #ffffff; background: #007acc; padding: 2px 6px; }
-        .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px; }
-        .control-group { display: flex; flex-direction: column; gap: 8px; border: 1px solid #333; padding: 15px; border-radius: 5px; }
-        label { font-size: 0.9em; font-weight: bold; color: #569cd6; }
-        button { padding: 12px; cursor: pointer; border: none; border-radius: 4px; background: #0e639c; color: white; font-weight: bold; }
-        button:disabled { background: #3a3d41; color: #757575; }
-        select, input[type="file"] { background: #3c3c3c; color: #ccc; padding: 8px; border: 1px solid #555; }
+
+        .success { color: #6a9955; font-weight: bold; }
+        .err { color: #f44747; font-weight: bold; }
+        .info { color: #808080; }
+        .step { color: #ce9178; font-weight: bold; border-left: 3px solid #ce9178; padding-left: 8px; margin-top: 10px; display: block; }
+
+        input[type="text"] { width: 100%; background: #252526; border: 1px solid #555; color: white; padding: 8px; border-radius: 4px; box-sizing: border-box; }
+        button { 
+            padding: 12px; cursor: pointer; border: none; border-radius: 4px; 
+            background: #0e639c; color: white; font-weight: bold; width: 100%; transition: 0.2s;
+        }
+        button:hover { background: #1177bb; }
+        button:disabled { background: #3a3d41; color: #757575; cursor: not-allowed; }
+        
+        .progress-container { 
+            height: 30px; background: #333; margin: 15px 0; border-radius: 4px; 
+            overflow: hidden; position: relative; border: 1px solid #555;
+        }
+        #progressFill { height: 100%; background: #2d8a49; width: 0%; transition: width 0.1s ease; }
+        #progressText {
+            position: absolute; width: 100%; text-align: center; left: 0; top: 0;
+            line-height: 30px; font-size: 14px; font-weight: bold; color: white;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
+        }
     </style>
 </head>
 <body>
 
 <div class="container">
-    <h2>STM32 UART Web Flasher</h2>
+    <h2>OpenOSD-X Web Flasher <small style="font-size: 0.4em; color: #888;">(STMicroelectronics G4 Series)</small></h2>
     
-    <div class="controls">
-        <div class="control-group">
-            <label>1. GitHub Release (OpenOSD-X)</label>
-            <select id="releaseSelect">
-                <option value="">-- リリースを取得中... --</option>
-            </select>
-            <button id="fetchBtn" style="padding: 5px; font-size: 0.8em; background: #444;">再読み込み</button>
-        </div>
-
-        <div class="control-group">
-            <label>OR: Local HEX File</label>
+    <div class="card">
+        <label>1. Firmware Input (File or URL)</label><br>
+        <div class="grid" style="margin-top:8px;">
             <input type="file" id="hexFile" accept=".hex">
+            <input type="text" id="hexUrl" placeholder="https://github.com/.../firmware.hex">
         </div>
+        <div style="margin-top:10px; font-size: 0.8em; color: #888;">*URL input will use a CORS proxy to fetch.</div>
+    </div>
 
-        <div class="control-group" style="grid-column: span 2;">
-            <button id="connectBtn">Connect Serial Port</button>
-            <button id="flashBtn" disabled style="margin-top:10px; background: #2d8a49;">START FLASHING</button>
-        </div>
+    <div class="card grid">
+        <button id="connectBtn">CONNECT PORT</button>
+        <button id="flashBtn" disabled style="background: #2d8a49;">EXECUTE FLASHING</button>
+    </div>
+    
+    <div class="progress-container">
+        <div id="progressFill"></div>
+        <div id="progressText">0%</div>
     </div>
 
     <div id="log"></div>
-    <button id="clearLogBtn" style="margin-top:10px; background:#444; width:100%;">Clear Log</button>
 </div>
 
 <script>
-window.addEventListener('DOMContentLoaded', async () => {
-    const REPO = "OpenOSD-X/OpenOSD-X";
-    let port, writer, rxBuffer = [];
-    const logDiv = document.getElementById('log');
-    const releaseSelect = document.getElementById('releaseSelect');
+const BOOT_CMD = { GET_ID: 0x02, WRITE_MEMORY: 0x31, EXTENDED_ERASE: 0x44, ACK: 0x79, NACK: 0x1F };
+const G4_CONF = { FLASH_BASE: 0x08000000, PAGE_SIZE: 2048, WRITE_CHUNK: 32 };
 
-    function debugLog(message, type = 'info') {
-        const span = document.createElement('span');
-        span.className = type;
-        span.textContent = `[${new Date().toLocaleTimeString('ja-JP', {hour12:false, fractionDigits:3})}] ${message}\n`;
-        logDiv.appendChild(span);
-        logDiv.scrollTop = logDiv.scrollHeight;
+let port, writer, reader, readIteration = true;
+let rxBuffer = [];
+
+const sleep = (ms) => new Promise(res => setTimeout(res, ms));
+const calcCS = (data) => data.reduce((a, b) => a ^ b, 0) & 0xFF;
+
+function debugLog(msg, type = '') {
+    const log = document.getElementById('log');
+    const div = document.createElement('div');
+    div.className = type;
+    const now = new Date().toLocaleTimeString('en-US', { hour12: false });
+    div.textContent = `[${now}] ${msg}`;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+}
+
+// Fetch helper with CORS proxy
+async function fetchHex(url) {
+    debugLog(`Fetching from URL: ${url}`, "info");
+    // Using corsproxy.io as a public bypass
+    const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+    try {
+        const response = await fetch(proxyUrl);
+        if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
+        return await response.text();
+    } catch (e) {
+        throw new Error(`CORS Fetch Failed: ${e.message}`);
     }
+}
 
-    // --- GitHub Releases 取得 ---
-    async function fetchReleases() {
-        try {
-            releaseSelect.innerHTML = '<option value="">-- 読込中 --</option>';
-            const res = await fetch(`https://api.github.com/repos/${REPO}/releases`);
-            const releases = await res.json();
-            
-            releaseSelect.innerHTML = '<option value="">-- GitHubから選択 --</option>';
-            releases.forEach(rel => {
-                rel.assets.forEach(asset => {
-                    if (asset.name.endsWith('.hex')) {
-                        const opt = document.createElement('option');
-                        opt.value = asset.browser_download_url;
-                        opt.textContent = `${rel.tag_name} - ${asset.name}`;
-                        releaseSelect.appendChild(opt);
-                    }
-                });
-            });
-            if (releaseSelect.options.length <= 1) {
-                releaseSelect.innerHTML = '<option value="">HEXファイルが見つかりません</option>';
-            }
-        } catch (e) {
-            debugLog("GitHubからの取得に失敗しました: " + e.message, "err");
+async function readLoop() {
+    try {
+        while (readIteration) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            if (value) rxBuffer.push(...value);
+        }
+    } catch (e) { 
+        if (readIteration) debugLog("READER ERROR: " + e.message, "err"); 
+    } finally {
+        if (reader) reader.releaseLock();
+    }
+}
+
+async function waitACK(timeout = 2000) {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+        if (rxBuffer.length > 0) {
+            const b = rxBuffer.shift();
+            if (b === BOOT_CMD.ACK) return true;
+            if (b === BOOT_CMD.NACK) return false;
+        }
+        await sleep(2);
+    }
+    return false;
+}
+
+async function closePort() {
+    debugLog("Releasing port resources...", "info");
+    readIteration = false; 
+    try {
+        if (reader) await reader.cancel();
+        if (writer) writer.releaseLock();
+        if (port) await port.close();
+        debugLog("PORT DISCONNECTED.", "success");
+    } catch (e) {
+        debugLog("DISCONNECTION ERROR: " + e.message, "err");
+    }
+    document.getElementById('flashBtn').disabled = true;
+    port = null; writer = null; reader = null;
+}
+
+function mspCRC(data) {
+    let crc = 0;
+    for (let b of data) {
+        crc ^= b;
+        for (let i = 0; i < 8; i++) {
+            crc = (crc & 0x80) ? (crc << 1) ^ 0xD5 : crc << 1;
         }
     }
+    return crc & 0xFF;
+}
 
-    // --- HEX パース (前回同様) ---
-    function parseHex(hexText) {
-        const lines = hexText.split(/\r?\n/);
-        let memory = new Map(), minAddr = 0xFFFFFFFF, maxAddr = 0, baseAddr = 0;
-        for (let line of lines) {
-            line = line.trim(); if (!line.startsWith(':')) continue;
-            const len = parseInt(line.substring(1, 3), 16), offset = parseInt(line.substring(3, 7), 16), type = parseInt(line.substring(7, 9), 16);
-            if (type === 0x00) {
-                const absAddr = baseAddr + offset;
-                const bytes = line.substring(9, 9 + (len * 2)).match(/.{1,2}/g).map(h => parseInt(h, 16));
-                bytes.forEach((b, i) => memory.set(absAddr + i, b));
-                minAddr = Math.min(minAddr, absAddr); maxAddr = Math.max(maxAddr, absAddr + len);
-            } else if (type === 0x04) baseAddr = parseInt(line.substring(9, 13), 16) << 16;
+function parseHex(text) {
+    const lines = text.split(/\r?\n/);
+    let memory = new Map(), minAddr = 0xFFFFFFFF, maxAddr = 0, baseAddr = 0;
+    for (let line of lines) {
+        line = line.trim();
+        if (!line.startsWith(':')) continue;
+        const len = parseInt(line.substring(1, 3), 16);
+        const offset = parseInt(line.substring(3, 7), 16);
+        const type = parseInt(line.substring(7, 9), 16);
+        if (type === 0x00) {
+            const abs = baseAddr + offset;
+            const data = line.substring(9, 9 + len * 2).match(/.{1,2}/g).map(h => parseInt(h, 16));
+            data.forEach((b, i) => memory.set(abs + i, b));
+            minAddr = Math.min(minAddr, abs);
+            maxAddr = Math.max(maxAddr, abs + len);
+        } else if (type === 0x04) {
+            baseAddr = parseInt(line.substring(9, 13), 16) << 16;
         }
-        const firmware = new Uint8Array(maxAddr - minAddr);
-        for (let i = 0; i < firmware.length; i++) firmware[i] = memory.get(minAddr + i) ?? 0xFF;
-        return { firmware, minAddr, maxAddr };
     }
+    return { memory, minAddr, maxAddr };
+}
 
-    // --- シリアル通信ヘルパー ---
-    async function startReading(reader) {
-        try { while (true) { const { value, done } = await reader.read(); if (done) break; if (value) { 
-            debugLog(`RX < ${Array.from(value).map(b => b.toString(16).toUpperCase().padStart(2,'0')).join(' ')}`, 'rx');
-            rxBuffer.push(...value); 
-        } } } catch (e) {}
-    }
+document.getElementById('connectBtn').onclick = async () => {
+    try {
+        rxBuffer = [];
+        readIteration = true;
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 115200 });
+        writer = port.writable.getWriter();
+        reader = port.readable.getReader();
+        readLoop();
+        debugLog("OPENOSD-X CONNECTED.", "success");
+        document.getElementById('flashBtn').disabled = false;
+    } catch (e) { debugLog("CONNECTION ERROR: " + e.message, "err"); }
+};
 
-    async function waitResponse(targetByte, timeout = 2000) {
-        const start = Date.now();
-        while (Date.now() - start < timeout) {
-            if (rxBuffer.length > 0) { const b = rxBuffer.shift(); if (b === targetByte) return true; if (b === 0x1F) return false; }
-            await new Promise(r => setTimeout(r, 5));
+document.getElementById('flashBtn').onclick = async () => {
+    const fileInput = document.getElementById('hexFile');
+    const urlInput = document.getElementById('hexUrl').value.trim();
+    let hexText = "";
+
+    try {
+        if (urlInput) {
+            hexText = await fetchHex(urlInput);
+        } else if (fileInput.files[0]) {
+            hexText = await fileInput.files[0].text();
+        } else {
+            alert("Please select a file or enter a URL.");
+            return;
         }
-        return false;
-    }
 
-    const sleep = (ms) => new Promise(res => setTimeout(res, ms));
-    const calcCS = (data) => data.reduce((a, b) => a ^ b, 0) & 0xFF;
+        debugLog("--- STARTING FLASH SEQUENCE ---", "step");
+        const { memory, minAddr, maxAddr } = parseHex(hexText);
+        debugLog(`LOADED: 0x${minAddr.toString(16).toUpperCase()} - 0x${maxAddr.toString(16).toUpperCase()} (${maxAddr-minAddr} bytes)`, "info");
 
-    // --- イベント ---
-    document.getElementById('fetchBtn').onclick = fetchReleases;
-    
-    document.getElementById('connectBtn').onclick = async () => {
-        try {
-            port = await navigator.serial.requestPort();
-            await port.open({ baudRate: 115200 });
-            writer = port.writable.getWriter();
-            startReading(port.readable.getReader());
-            debugLog("Serial Connected.", "success");
-            document.getElementById('flashBtn').disabled = false;
-        } catch (e) { debugLog("Error: " + e, "err"); }
-    };
+        // Flash Logic (Same as before)
+        debugLog("INITIALIZING BRIDGE...", "info");
+        let p = [0x24, 0x58, 0x3C, 0x00, 0xF5, 0x00, 0x02, 0x00, 0xFE, 0x11];
+        p.push(mspCRC(p.slice(3, 10)));
+        await writer.write(new Uint8Array(p));
+        await sleep(1000);
 
-    document.getElementById('flashBtn').onclick = async () => {
-        let hexText = "";
-        const localFile = document.getElementById('hexFile').files[0];
-        const remoteUrl = releaseSelect.value;
+        debugLog("INVOKING BOOTLOADER...", "info");
+        let b = [0x24, 0x58, 0x3C, 0x00, 0x44, 0x00, 0x00, 0x00];
+        b.push(mspCRC(b.slice(3, 8)));
+        await writer.write(new Uint8Array(b));
+        await sleep(1500);
+        rxBuffer = []; 
 
-        try {
-            if (localFile) {
-                hexText = await localFile.text();
-                debugLog(`Loading Local File: ${localFile.name}`, "info");
-            } else if (remoteUrl) {
-                debugLog(`Downloading from GitHub: ${remoteUrl}`, "info");
-                const res = await fetch(remoteUrl);
-                hexText = await res.text();
-            } else {
-                alert("HEXファイルを選択してください"); return;
-            }
-
-            const { firmware, minAddr, maxAddr } = parseHex(hexText);
-            rxBuffer = [];
-
-            // --- 以降、書き込みロジック (前回の安定版) ---
-            debugLog("Step 2-4: Entering Bootloader Mode", "step");
-            await writer.write(new Uint8Array([0x24,0x58,0x3C,0x00,0xF5,0x00,0x02,0x00,0xFE,0x11,0x12]));
-            await sleep(1000);
-            await writer.write(new Uint8Array([0x24,0x58,0x3C,0x00,0x44,0x00,0x00,0x00,0x06]));
-            await sleep(2000);
-            rxBuffer = [];
-
+        debugLog("SYNCHRONIZING UART...", "info");
+        let synced = false;
+        for(let i=0; i<5; i++) {
             await writer.write(new Uint8Array([0x7F]));
-            if (!await waitResponse(0x79)) throw new Error("Sync Failed");
+            if (await waitACK(500)) { synced = true; break; }
+        }
+        if (!synced) throw new Error("SYNC FAILED.");
 
-            debugLog("Step 6: Erasing...", "step");
-            const PAGE_SIZE = 2048;
-            const startP = Math.floor((minAddr - 0x08000000) / PAGE_SIZE);
-            const endP = Math.floor((maxAddr - 0x08000000 - 1) / PAGE_SIZE);
-            let pList = []; for(let i=startP; i<=endP; i++) pList.push(i);
+        await writer.write(new Uint8Array([BOOT_CMD.GET_ID, BOOT_CMD.GET_ID ^ 0xFF]));
+        if (!await waitACK()) throw new Error("ID REJECTED.");
+        while(rxBuffer.length < 1) await sleep(5);
+        const idLen = rxBuffer.shift();
+        for(let i=0; i<=idLen; i++) {
+            while(rxBuffer.length < 1) await sleep(5);
+            rxBuffer.shift();
+        }
+        await waitACK(); 
 
-            await writer.write(new Uint8Array([0x44, 0xBB]));
-            await waitResponse(0x79);
-            let ePL = [(pList.length-1 >> 8) & 0xFF, (pList.length-1) & 0xFF];
-            pList.forEach(p => { ePL.push((p >> 8) & 0xFF); ePL.push(p & 0xFF); });
-            await writer.write(new Uint8Array([...ePL, calcCS(ePL)]));
-            if (!await waitResponse(0x79, 15000)) throw new Error("Erase Timeout");
+        const startPage = Math.floor((minAddr - G4_CONF.FLASH_BASE) / G4_CONF.PAGE_SIZE);
+        const endPage = Math.floor((maxAddr - G4_CONF.FLASH_BASE - 1) / G4_CONF.PAGE_SIZE);
+        debugLog(`ERASING FLASH...`, "step");
 
-            await sleep(1500); // 安定待ち
+        for (let p = startPage; p <= endPage; p++) {
+            await writer.write(new Uint8Array([BOOT_CMD.EXTENDED_ERASE, BOOT_CMD.EXTENDED_ERASE ^ 0xFF]));
+            if (!await waitACK()) throw new Error(`ERASE FAILED AT PAGE ${p}`);
+            const payload = [0x00, 0x00, (p >> 8) & 0xFF, p & 0xFF];
+            await writer.write(new Uint8Array([...payload, calcCS(payload)]));
+            if (!await waitACK(5000)) throw new Error(`ERASE TIMEOUT AT PAGE ${p}`);
+        }
 
-            debugLog("Step 7: Writing...", "step");
-            const CHUNK = 128;
-            for (let i = 0; i < firmware.length; i += CHUNK) {
-                let chunk = firmware.slice(i, i + CHUNK);
-                if (chunk.length % 8 !== 0) {
-                    let tmp = new Uint8Array(Math.ceil(chunk.length / 8) * 8).fill(0xFF);
-                    tmp.set(chunk); chunk = tmp;
-                }
-                const addr = minAddr + i;
-                await writer.write(new Uint8Array([0x31, 0xCE])); await waitResponse(0x79);
-                const aB = [(addr >> 24) & 0xFF, (addr >> 16) & 0xFF, (addr >> 8) & 0xFF, addr & 0xFF];
-                await writer.write(new Uint8Array([...aB, calcCS(aB)]));
-                if (!await waitResponse(0x79)) throw new Error(`Addr NACK at 0x${addr.toString(16)}`);
-                const dPL = [chunk.length - 1, ...chunk];
-                await writer.write(new Uint8Array([...dPL, calcCS(dPL)]));
-                if (!await waitResponse(0x79)) throw new Error("Data NACK");
-                if (i % 4096 === 0) debugLog(`Progress: ${Math.round((i/firmware.length)*100)}%`);
+        debugLog("WRITING FIRMWARE...", "step");
+        const totalSize = maxAddr - minAddr;
+        let written = 0;
+        let lastLogPercent = -10;
+
+        for (let addr = minAddr; addr < maxAddr; addr += G4_CONF.WRITE_CHUNK) {
+            const chunk = [];
+            for (let j = 0; j < G4_CONF.WRITE_CHUNK; j++) {
+                chunk.push(memory.get(addr + j) ?? 0xFF);
             }
-            debugLog("--- FLASH SUCCESSFUL ---", "success");
-        } catch (e) { debugLog(`FATAL: ${e.message}`, "err"); }
-    };
+            await writer.write(new Uint8Array([BOOT_CMD.WRITE_MEMORY, BOOT_CMD.WRITE_MEMORY ^ 0xFF]));
+            if (!await waitACK()) throw new Error("WRITE CMD NACK.");
+            const aB = [(addr >> 24) & 0xFF, (addr >> 16) & 0xFF, (addr >> 8) & 0xFF, addr & 0xFF];
+            await writer.write(new Uint8Array([...aB, calcCS(aB)]));
+            if (!await waitACK()) throw new Error(`ADDR ERROR AT 0x${addr.toString(16)}`);
+            const dPL = [chunk.length - 1, ...chunk];
+            await writer.write(new Uint8Array([...dPL, calcCS(dPL)]));
+            if (!await waitACK()) throw new Error(`DATA ERROR AT 0x${addr.toString(16)}`);
 
-    fetchReleases(); // 起動時にリリースを取得
-    document.getElementById('clearLogBtn').onclick = () => logDiv.innerHTML = '';
-});
+            written += chunk.length;
+            const percent = Math.floor((written / totalSize) * 100);
+            document.getElementById('progressFill').style.width = `${percent}%`;
+            document.getElementById('progressText').textContent = `${percent}% (${written}/${totalSize})`;
+
+            if (percent >= lastLogPercent + 10) {
+                debugLog(`FLASH PROGRESS: ${percent}%`, "info");
+                lastLogPercent = percent;
+            }
+        }
+
+        debugLog("FLASH COMPLETED SUCCESSFULLY!", "success");
+        alert("FLASHING COMPLETED.");
+
+    } catch (e) {
+        debugLog("FATAL ERROR: " + e.message, "err");
+        alert("ERROR: " + e.message);
+    } finally {
+        await closePort();
+    }
+};
 </script>
 </body>
 </html>
