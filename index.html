@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>STM32 G4 Web Flasher (Python Logic Sync)</title>
+    <title>STM32 G4 Web Flasher (Auto-Release Port)</title>
     <style>
         body { font-family: 'Segoe UI', sans-serif; background: #1e1e1e; color: #d4d4d4; padding: 20px; line-height: 1.5; }
         .container { max-width: 900px; margin: auto; background: #252526; padding: 25px; border-radius: 8px; border: 1px solid #444; }
@@ -21,7 +21,6 @@
         button:hover { background: #1177bb; }
         button:disabled { background: #444; color: #888; cursor: not-allowed; }
         
-        /* インジケータの強化 */
         .progress-container { 
             height: 24px; background: #444; margin: 15px 0; border-radius: 12px; 
             overflow: hidden; position: relative; border: 1px solid #555;
@@ -71,7 +70,8 @@
 const BOOT_CMD = { GET_ID: 0x02, WRITE_MEMORY: 0x31, EXTENDED_ERASE: 0x44, ACK: 0x79, NACK: 0x1F };
 const G4_CONF = { FLASH_BASE: 0x08000000, PAGE_SIZE: 2048, WRITE_CHUNK: 32 };
 
-let port, writer, reader, rxBuffer = [];
+let port, writer, reader, readIteration = true;
+let rxBuffer = [];
 
 const sleep = (ms) => new Promise(res => setTimeout(res, ms));
 const calcCS = (data) => data.reduce((a, b) => a ^ b, 0) & 0xFF;
@@ -98,12 +98,16 @@ function debugLog(msg, type = '') {
 
 async function readLoop() {
     try {
-        while (true) {
+        while (readIteration) {
             const { value, done } = await reader.read();
             if (done) break;
             rxBuffer.push(...value);
         }
-    } catch (e) { debugLog("Read Error: " + e.message, "err"); }
+    } catch (e) { 
+        if (readIteration) debugLog("Read Error: " + e.message, "err"); 
+    } finally {
+        reader.releaseLock();
+    }
 }
 
 async function waitACK(timeout = 2000) {
@@ -117,6 +121,24 @@ async function waitACK(timeout = 2000) {
         await sleep(5);
     }
     return false;
+}
+
+async function closePort() {
+    debugLog("Releasing port...", "info");
+    readIteration = false; 
+    
+    if (reader) {
+        await reader.cancel().catch(() => {});
+    }
+    if (writer) {
+        writer.releaseLock();
+    }
+    if (port) {
+        await port.close().catch(e => debugLog("Close Error: " + e.message, "err"));
+        debugLog("Port Closed.", "info");
+    }
+    document.getElementById('flashBtn').disabled = true;
+    port = null; writer = null; reader = null;
 }
 
 function parseHex(text) {
@@ -142,6 +164,8 @@ function parseHex(text) {
 
 document.getElementById('connectBtn').onclick = async () => {
     try {
+        rxBuffer = [];
+        readIteration = true;
         port = await navigator.serial.requestPort();
         await port.open({ baudRate: 115200 });
         writer = port.writable.getWriter();
@@ -154,12 +178,11 @@ document.getElementById('connectBtn').onclick = async () => {
 
 document.getElementById('flashBtn').onclick = async () => {
     const file = document.getElementById('hexFile').files[0];
-    if (!file) return;
+    if (!file || !port) return;
 
     try {
         const { memory, minAddr, maxAddr } = parseHex(await file.text());
         debugLog(`Firmware: 0x${minAddr.toString(16).toUpperCase()} to 0x${maxAddr.toString(16).toUpperCase()}`, "info");
-        rxBuffer = [];
 
         // --- Step 2 & 3: MSP Commands ---
         debugLog("Setting up Serial Passthrough...", "step");
@@ -188,14 +211,13 @@ document.getElementById('flashBtn').onclick = async () => {
         await writer.write(new Uint8Array([BOOT_CMD.GET_ID, BOOT_CMD.GET_ID ^ 0xFF]));
         if (!await waitACK()) throw new Error("Get ID command failed.");
         const idLen = (await (async () => { while(rxBuffer.length === 0) await sleep(5); return rxBuffer.shift(); })());
-        for(let i=0; i<=idLen; i++) rxBuffer.shift(); // Consume ID bytes
+        for(let i=0; i<=idLen; i++) rxBuffer.shift();
         await waitACK();
 
-        // --- Step 7 & 8: Erase (One by one like Python) ---
+        // --- Step 7 & 8: Erase ---
         const startPage = Math.floor((minAddr - G4_CONF.FLASH_BASE) / G4_CONF.PAGE_SIZE);
         const endPage = Math.floor((maxAddr - G4_CONF.FLASH_BASE - 1) / G4_CONF.PAGE_SIZE);
-        const totalPages = endPage - startPage + 1;
-        debugLog(`Erasing ${totalPages} pages (${startPage}-${endPage})...`, "step");
+        debugLog(`Erasing pages ${startPage} to ${endPage}...`, "step");
 
         for (let p = startPage; p <= endPage; p++) {
             await writer.write(new Uint8Array([BOOT_CMD.EXTENDED_ERASE, BOOT_CMD.EXTENDED_ERASE ^ 0xFF]));
@@ -208,7 +230,7 @@ document.getElementById('flashBtn').onclick = async () => {
         await sleep(500);
 
         // --- Step 9: Write ---
-        debugLog("Starting Firmware Write...", "step");
+        debugLog("Writing Firmware...", "step");
         const totalSize = maxAddr - minAddr;
         let written = 0;
         let lastLogPercent = -10;
@@ -218,41 +240,35 @@ document.getElementById('flashBtn').onclick = async () => {
             for (let j = 0; j < G4_CONF.WRITE_CHUNK; j++) {
                 chunk.push(memory.get(addr + j) ?? 0xFF);
             }
-
-            // Command
             await writer.write(new Uint8Array([BOOT_CMD.WRITE_MEMORY, BOOT_CMD.WRITE_MEMORY ^ 0xFF]));
             if (!await waitACK()) throw new Error("Write Cmd NACK");
-
-            // Address
             const aB = [(addr >> 24) & 0xFF, (addr >> 16) & 0xFF, (addr >> 8) & 0xFF, addr & 0xFF];
             await writer.write(new Uint8Array([...aB, calcCS(aB)]));
             if (!await waitACK()) throw new Error(`Address NACK at 0x${addr.toString(16)}`);
-
-            // Data
             const dPL = [chunk.length - 1, ...chunk];
             await writer.write(new Uint8Array([...dPL, calcCS(dPL)]));
             if (!await waitACK()) throw new Error(`Data NACK at 0x${addr.toString(16)}`);
 
             written += chunk.length;
             const percent = Math.floor((written / totalSize) * 100);
-            
-            // UI Update
             document.getElementById('progressFill').style.width = `${percent}%`;
             document.getElementById('progressText').textContent = `${percent}%`;
 
-            // Log Progress every 10%
             if (percent >= lastLogPercent + 10) {
-                debugLog(`Progress: ${percent}% (${written} / ${totalSize} bytes)`);
+                debugLog(`Progress: ${percent}%`);
                 lastLogPercent = percent;
             }
         }
 
         debugLog("FLASH COMPLETED SUCCESSFULLY!", "success");
         document.getElementById('progressFill').style.background = "#2d8a49";
-        alert("書き込みが完了しました。");
+        alert("書き込み完了！シリアルポートを解放します。");
 
     } catch (e) {
         debugLog("FATAL ERROR: " + e.message, "err");
+    } finally {
+        // --- ポートの解放処理 ---
+        await closePort();
     }
 };
 </script>
