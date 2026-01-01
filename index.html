@@ -2,14 +2,28 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>OpenOSD-X Web Flasher</title>
+    <title>OpenOSD-X App</title>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1e1e1e; color: #d4d4d4; padding: 20px; line-height: 1.5; }
         .container { max-width: 1000px; margin: auto; background: #252526; padding: 25px; border-radius: 8px; border: 1px solid #444; }
         h2 { color: #569cd6; margin-top: 0; border-bottom: 1px solid #444; padding-bottom: 10px; }
-        .card { background: #333; padding: 15px; border-radius: 6px; margin-bottom: 20px; border: 1px solid #444; }
+        
+        .card { background: #333; padding: 15px; border-radius: 6px; margin-bottom: 20px; border: 1px solid #444; position: relative; }
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
-        .step-title { font-weight: bold; color: #ce9178; margin-bottom: 10px; display: block; }
+        
+        /* Step Badge Style */
+        .step-badge {
+            display: inline-block;
+            background: #ce9178;
+            color: #1e1e1e;
+            font-weight: bold;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+        .step-title { font-weight: bold; color: #ce9178; font-size: 1.1em; display: block; margin-bottom: 15px; }
         
         #log { 
             width: 100%; height: 400px; background: #000; color: #dcdcdc; 
@@ -45,10 +59,10 @@
 <body>
 
 <div class="container">
-    <h2>OpenOSD-X Web Flasher</h2>
+    <h2>OpenOSD-X App</h2>
     
     <div class="card">
-        <span class="step-title">1. Select Firmware Source</span>
+        <span class="step-title"><span class="step-badge">1</span>Select Firmware Source</span>
         <div class="grid">
             <div>
                 <small style="color: #aaa;">GitHub Releases:</small>
@@ -65,11 +79,11 @@
 
     <div class="grid">
         <div class="card">
-            <span class="step-title">2. Interface Setup</span>
+            <span class="step-title"><span class="step-badge">2</span>Interface Setup</span>
             <button id="connectBtn">CONNECT PORT</button>
         </div>
         <div class="card">
-            <span class="step-title">3. Deployment</span>
+            <span class="step-title"><span class="step-badge">3</span>Deployment</span>
             <button id="flashBtn" disabled style="background: #2d8a49;">EXECUTE FLASHING</button>
         </div>
     </div>
@@ -109,7 +123,7 @@ async function loadReleases() {
     try {
         const apiUrl = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
         const response = await fetch(`${PROXY_BASE}${encodeURIComponent(apiUrl)}`);
-        if (!response.ok) throw new Error("API response error");
+        if (!response.ok) throw new Error("API access error");
         const data = await response.json();
         const hexAssets = data.assets.filter(a => a.name.endsWith('.hex'));
         select.innerHTML = '<option value="">-- Select from GitHub --</option>';
@@ -119,7 +133,7 @@ async function loadReleases() {
             opt.textContent = `${asset.name} (${data.tag_name})`;
             select.appendChild(opt);
         });
-        debugLog(`Latest release found: ${data.tag_name}`, "success");
+        debugLog(`OpenOSD-X App: Ready. Latest firmware found: ${data.tag_name}`, "success");
     } catch (e) {
         select.innerHTML = '<option value="">Error loading releases</option>';
         debugLog("GITHUB FETCH ERROR: " + e.message, "err");
@@ -127,10 +141,10 @@ async function loadReleases() {
 }
 
 async function fetchHex(url) {
-    debugLog(`Downloading firmware from GitHub...`, "info");
+    debugLog(`Downloading firmware...`, "info");
     try {
         const response = await fetch(`${PROXY_BASE}${encodeURIComponent(url)}`);
-        if (!response.ok) throw new Error(`HTTP Status ${response.status}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return await response.text();
     } catch (e) { throw new Error(`Download Failed: ${e.message}`); }
 }
@@ -209,7 +223,7 @@ document.getElementById('connectBtn').onclick = async () => {
         writer = port.writable.getWriter();
         reader = port.readable.getReader();
         readLoop();
-        debugLog("PORT CONNECTED.", "success");
+        debugLog("OpenOSD-X App: Port connected.", "success");
         document.getElementById('flashBtn').disabled = false;
     } catch (e) { debugLog("PORT OPEN FAILED: " + e.message, "err"); }
 };
@@ -221,33 +235,33 @@ document.getElementById('flashBtn').onclick = async () => {
     try {
         if (ghUrl) hexText = await fetchHex(ghUrl);
         else if (localFile) hexText = await localFile.text();
-        else { alert("Select firmware source first."); return; }
+        else { alert("Select firmware source (Step 1)."); return; }
 
-        debugLog("--- STARTING FLASH SEQUENCE ---", "log-step");
+        debugLog("--- STARTING OPENOSD-X DEPLOYMENT ---", "log-step");
         const { memory, minAddr, maxAddr } = parseHex(hexText);
-        debugLog(`Target: 0x${minAddr.toString(16).toUpperCase()} - 0x${maxAddr.toString(16).toUpperCase()}`, "info");
+        debugLog(`Image Load Range: 0x${minAddr.toString(16).toUpperCase()} - 0x${maxAddr.toString(16).toUpperCase()}`, "info");
 
         document.getElementById('progressFill').style.width = "0%";
         document.getElementById('progressFill').style.background = "#2d8a49";
 
-        debugLog("Step 1: Setting Passthrough (MSP)...", "info");
+        debugLog("Setting Passthrough mode...", "info");
         await writer.write(new Uint8Array([...[0x24, 0x58, 0x3C, 0x00, 0xF5, 0x00, 0x02, 0x00, 0xFE, 0x11], mspCRC([0x00, 0xF5, 0x00, 0x02, 0x00, 0xFE, 0x11])]));
         await sleep(1000);
         await writer.write(new Uint8Array([...[0x24, 0x58, 0x3C, 0x00, 0x44, 0x00, 0x00, 0x00], mspCRC([0x00, 0x44, 0x00, 0x00, 0x00])]));
         await sleep(1500);
         rxBuffer = [];
 
-        debugLog("Step 2: UART Sync...", "info");
+        debugLog("UART Synchronization...", "info");
         let synced = false;
         for(let i=0; i<5; i++) {
             await writer.write(new Uint8Array([0x7F]));
             if (await waitACK(500)) { synced = true; break; }
         }
-        if (!synced) throw new Error("Sync failed.");
+        if (!synced) throw new Error("Sync failed. Device not responding.");
 
         const startPage = Math.floor((minAddr - G4_CONF.FLASH_BASE) / G4_CONF.PAGE_SIZE);
         const endPage = Math.floor((maxAddr - G4_CONF.FLASH_BASE - 1) / G4_CONF.PAGE_SIZE);
-        debugLog(`Step 3: Erasing Pages ${startPage}-${endPage}...`, "log-step");
+        debugLog(`Erasing Flash Memory (Pages ${startPage}-${endPage})...`, "log-step");
         for (let p = startPage; p <= endPage; p++) {
             await writer.write(new Uint8Array([BOOT_CMD.EXTENDED_ERASE, 0xBB]));
             await waitACK();
@@ -257,7 +271,7 @@ document.getElementById('flashBtn').onclick = async () => {
             if (p % 10 === 0) debugLog(`Erasing page ${p}...`);
         }
 
-        debugLog("Step 4: Writing Memory...", "log-step");
+        debugLog("Writing Memory Blocks...", "log-step");
         const totalSize = maxAddr - minAddr;
         let written = 0;
         let lastLogPercent = -10;
@@ -274,16 +288,16 @@ document.getElementById('flashBtn').onclick = async () => {
             document.getElementById('progressFill').style.width = pct + "%";
             document.getElementById('progressText').textContent = `${pct}% (${written}/${totalSize} BYTES)`;
             if (pct >= lastLogPercent + 10) {
-                debugLog(`Flash Progress: ${pct}% (At 0x${addr.toString(16).toUpperCase()})`);
+                debugLog(`Progress: ${pct}% (Target 0x${addr.toString(16).toUpperCase()})`);
                 lastLogPercent = pct;
             }
         }
-        debugLog("--- FLASHING COMPLETED SUCCESSFULLY ---", "success");
+        debugLog("--- OPENOSD-X APP: DEPLOYMENT SUCCESSFUL ---", "success");
         document.getElementById('progressFill').style.background = "#4fc1ff";
     } catch (e) {
         debugLog("FAILURE: " + e.message, "err");
         document.getElementById('progressFill').style.background = "#f44747";
-        alert("ERROR: " + e.message);
+        alert("DEPLOYMENT FAILED: " + e.message);
     } finally { await closePort(); }
 };
 
