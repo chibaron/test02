@@ -44,7 +44,7 @@
 <body>
 
 <div class="container">
-    <h2>OpenOSD-X Web Flasher <small style="font-size: 0.4em; color: #888;">(STMicroelectronics G4 Series)</small></h2>
+    <h2>OpenOSD-X Web Flasher</h2>
     
     <div class="card">
         <label>1. Firmware Source</label><br>
@@ -97,13 +97,12 @@ function debugLog(msg, type = '') {
     log.scrollTop = log.scrollHeight;
 }
 
-// GitHub API: Fetch Latest Release HEX files
 async function loadReleases() {
     const select = document.getElementById('githubSelect');
     try {
         const apiUrl = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
         const response = await fetch(`${PROXY_BASE}${encodeURIComponent(apiUrl)}`);
-        if (!response.ok) throw new Error("Failed to fetch release info");
+        if (!response.ok) throw new Error("API response error");
         
         const data = await response.json();
         const hexAssets = data.assets.filter(a => a.name.endsWith('.hex'));
@@ -115,18 +114,18 @@ async function loadReleases() {
             opt.textContent = `${asset.name} (${data.tag_name})`;
             select.appendChild(opt);
         });
-        debugLog(`Loaded ${hexAssets.length} assets from GitHub (${data.tag_name})`, "success");
+        debugLog(`Available Release: ${data.tag_name}`, "success");
     } catch (e) {
         select.innerHTML = '<option value="">Error loading releases</option>';
-        debugLog("GITHUB API ERROR: " + e.message, "err");
+        debugLog("GITHUB FETCH ERROR: " + e.message, "err");
     }
 }
 
 async function fetchHex(url) {
-    debugLog(`Downloading: ${url}`, "info");
+    debugLog(`Downloading firmware from GitHub...`, "info");
     try {
         const response = await fetch(`${PROXY_BASE}${encodeURIComponent(url)}`);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        if (!response.ok) throw new Error(`HTTP Status ${response.status}`);
         return await response.text();
     } catch (e) {
         throw new Error(`Download Failed: ${e.message}`);
@@ -140,7 +139,7 @@ async function readLoop() {
             if (done) break;
             if (value) rxBuffer.push(...value);
         }
-    } catch (e) { if (readIteration) debugLog("READER ERROR: " + e.message, "err"); }
+    } catch (e) { if (readIteration) debugLog("SERIAL READ ERROR: " + e.message, "err"); }
     finally { if (reader) reader.releaseLock(); }
 }
 
@@ -150,22 +149,26 @@ async function waitACK(timeout = 2000) {
         if (rxBuffer.length > 0) {
             const b = rxBuffer.shift();
             if (b === BOOT_CMD.ACK) return true;
-            if (b === BOOT_CMD.NACK) return false;
+            if (b === BOOT_CMD.NACK) {
+                debugLog("NACK received from target device.", "err");
+                return false;
+            }
         }
         await sleep(2);
     }
+    debugLog("TIMEOUT: No response from target.", "err");
     return false;
 }
 
 async function closePort() {
-    debugLog("Releasing port...", "info");
+    debugLog("Closing serial port connection.", "info");
     readIteration = false; 
     try {
         if (reader) await reader.cancel();
         if (writer) writer.releaseLock();
         if (port) await port.close();
-        debugLog("DISCONNECTED.", "success");
-    } catch (e) { debugLog("PORT ERROR: " + e.message, "err"); }
+        debugLog("PORT RELEASED.", "success");
+    } catch (e) { debugLog("DISCONNECTION ERROR: " + e.message, "err"); }
     document.getElementById('flashBtn').disabled = true;
     port = null; writer = null; reader = null;
 }
@@ -207,9 +210,9 @@ document.getElementById('connectBtn').onclick = async () => {
         writer = port.writable.getWriter();
         reader = port.readable.getReader();
         readLoop();
-        debugLog("CONNECTED.", "success");
+        debugLog("SERIAL INTERFACE CONNECTED.", "success");
         document.getElementById('flashBtn').disabled = false;
-    } catch (e) { debugLog("CONN ERROR: " + e.message, "err"); }
+    } catch (e) { debugLog("FAILED TO OPEN PORT: " + e.message, "err"); }
 };
 
 document.getElementById('flashBtn').onclick = async () => {
@@ -222,69 +225,103 @@ document.getElementById('flashBtn').onclick = async () => {
             hexText = await fetchHex(ghUrl);
         } else if (localFile) {
             hexText = await localFile.text();
+            debugLog("Loaded local HEX file.", "info");
         } else {
-            alert("Please select a firmware source.");
+            debugLog("ERROR: No firmware source selected.", "err");
             return;
         }
 
-        debugLog("--- STARTING FLASH ---", "step");
+        debugLog("--- INITIATING FLASHING SEQUENCE ---", "step");
         const { memory, minAddr, maxAddr } = parseHex(hexText);
-        debugLog(`IMAGE: 0x${minAddr.toString(16).toUpperCase()} - 0x${maxAddr.toString(16).toUpperCase()} (${maxAddr-minAddr} bytes)`, "info");
+        debugLog(`TARGET RANGE: 0x${minAddr.toString(16).toUpperCase()} to 0x${maxAddr.toString(16).toUpperCase()}`, "info");
+        debugLog(`TOTAL SIZE: ${maxAddr - minAddr} bytes`, "info");
 
-        // Initialization
+        // RESET UI
+        document.getElementById('progressFill').style.width = "0%";
+        document.getElementById('progressFill').style.background = "#2d8a49";
+
+        // Step 1: MSP Handshake
+        debugLog("Setting Serial Passthrough mode via MSP...", "info");
         await writer.write(new Uint8Array([...[0x24, 0x58, 0x3C, 0x00, 0xF5, 0x00, 0x02, 0x00, 0xFE, 0x11], mspCRC([0x00, 0xF5, 0x00, 0x02, 0x00, 0xFE, 0x11])]));
         await sleep(1000);
+        
+        debugLog("Requesting System Bootloader entry...", "info");
         await writer.write(new Uint8Array([...[0x24, 0x58, 0x3C, 0x00, 0x44, 0x00, 0x00, 0x00], mspCRC([0x00, 0x44, 0x00, 0x00, 0x00])]));
         await sleep(1500);
         rxBuffer = [];
 
-        // Sync
+        // Step 2: UART Sync
+        debugLog("Synchronizing UART baud rate...", "info");
         let synced = false;
         for(let i=0; i<5; i++) {
             await writer.write(new Uint8Array([0x7F]));
             if (await waitACK(500)) { synced = true; break; }
         }
-        if (!synced) throw new Error("SYNC FAILED.");
+        if (!synced) throw new Error("Synchronization failed. Check connection or boot mode.");
+        debugLog("UART Synced.", "success");
 
-        // Erase & Write
+        // Step 3: Erase
         const startPage = Math.floor((minAddr - G4_CONF.FLASH_BASE) / G4_CONF.PAGE_SIZE);
         const endPage = Math.floor((maxAddr - G4_CONF.FLASH_BASE - 1) / G4_CONF.PAGE_SIZE);
-        debugLog("ERASING...", "info");
+        debugLog(`Starting Flash Erase: Page ${startPage} to ${endPage}`, "step");
+        
         for (let p = startPage; p <= endPage; p++) {
             await writer.write(new Uint8Array([BOOT_CMD.EXTENDED_ERASE, 0xBB]));
-            await waitACK();
+            if (!await waitACK()) throw new Error("Erase command rejected.");
             const pay = [0x00, 0x00, (p >> 8) & 0xFF, p & 0xFF];
             await writer.write(new Uint8Array([...pay, calcCS(pay)]));
-            await waitACK(5000);
+            if (!await waitACK(5000)) throw new Error(`Timeout erasing page ${p}`);
+            if (p % 10 === 0) debugLog(`Erasing page ${p}...`);
         }
+        debugLog("Erase process finished.", "success");
 
-        debugLog("WRITING...", "info");
+        // Step 4: Write
+        debugLog("Starting Memory Write...", "step");
         const totalSize = maxAddr - minAddr;
         let written = 0;
+        let lastLogPercent = -10;
+
         for (let addr = minAddr; addr < maxAddr; addr += G4_CONF.WRITE_CHUNK) {
             const chunk = [];
             for (let j = 0; j < G4_CONF.WRITE_CHUNK; j++) chunk.push(memory.get(addr + j) ?? 0xFF);
-            await writer.write(new Uint8Array([BOOT_CMD.WRITE_MEMORY, 0xCE])); await waitACK();
+            
+            // CMD
+            await writer.write(new Uint8Array([BOOT_CMD.WRITE_MEMORY, 0xCE])); 
+            if (!await waitACK()) throw new Error("Write Command rejected.");
+            
+            // ADDR
             const aB = [(addr >> 24) & 0xFF, (addr >> 16) & 0xFF, (addr >> 8) & 0xFF, addr & 0xFF];
-            await writer.write(new Uint8Array([...aB, calcCS(aB)])); await waitACK();
+            await writer.write(new Uint8Array([...aB, calcCS(aB)])); 
+            if (!await waitACK()) throw new Error(`Address 0x${addr.toString(16)} rejected.`);
+            
+            // DATA
             const dPL = [chunk.length - 1, ...chunk];
-            await writer.write(new Uint8Array([...dPL, calcCS(dPL)])); await waitACK();
+            await writer.write(new Uint8Array([...dPL, calcCS(dPL)])); 
+            if (!await waitACK()) throw new Error(`Write failed at 0x${addr.toString(16)}`);
             
             written += chunk.length;
             const pct = Math.floor((written / totalSize) * 100);
             document.getElementById('progressFill').style.width = pct + "%";
-            document.getElementById('progressText').textContent = `${pct}% (${written}/${totalSize})`;
+            document.getElementById('progressText').textContent = `${pct}% (${written}/${totalSize} BYTES)`;
+
+            if (pct >= lastLogPercent + 10) {
+                debugLog(`Current Address: 0x${addr.toString(16).toUpperCase()} (${pct}%)`);
+                lastLogPercent = pct;
+            }
         }
 
-        debugLog("SUCCESS!", "success");
-        alert("COMPLETED.");
+        debugLog("--- FLASHING COMPLETED SUCCESSFULLY ---", "success");
+        document.getElementById('progressFill').style.background = "#4fc1ff";
     } catch (e) {
-        debugLog("FATAL: " + e.message, "err");
-        alert("ERROR: " + e.message);
-    } finally { await closePort(); }
+        debugLog("CRITICAL FAILURE: " + e.message, "err");
+        document.getElementById('progressFill').style.background = "#f44747";
+        alert("FLASHING FAILED: " + e.message); // エラー時のみ通知
+    } finally { 
+        await closePort(); 
+    }
 };
 
-// Start Up
+// Initialize
 loadReleases();
 </script>
 </body>
