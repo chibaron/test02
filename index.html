@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>STM32 G4 Web Flasher - Professional Edition</title>
+    <title>OpenOSD-X Web Flasher</title>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1e1e1e; color: #d4d4d4; padding: 20px; line-height: 1.5; }
         .container { max-width: 1000px; margin: auto; background: #252526; padding: 25px; border-radius: 8px; border: 1px solid #444; }
@@ -47,20 +47,20 @@
 <body>
 
 <div class="container">
-    <h2>STM32 UART Web Flasher <small style="font-size: 0.5em; color: #888;">Verbose Debug Mode</small></h2>
+    <h2>OpenOSD-X Web Flasher <small style="font-size: 0.4em; color: #888;">(STMicroelectronics G4 Series)</small></h2>
     
     <div class="card grid">
         <div>
-            <label>1. Select Firmware (.hex)</label><br>
+            <label>1. Firmware Input (.hex)</label><br>
             <input type="file" id="hexFile" accept=".hex" style="margin-top:8px;">
         </div>
         <div>
-            <label>2. Device Control</label><br>
-            <button id="connectBtn">CONNECT SERIAL PORT</button>
+            <label>2. Hardware Interface</label><br>
+            <button id="connectBtn">CONNECT PORT</button>
         </div>
     </div>
 
-    <button id="flashBtn" disabled style="background: #2d8a49; height: 50px; font-size: 1.2em;">START FLASHING</button>
+    <button id="flashBtn" disabled style="background: #2d8a49; height: 50px; font-size: 1.2em;">EXECUTE FLASHING</button>
     
     <div class="progress-container">
         <div id="progressFill"></div>
@@ -118,7 +118,7 @@ async function readLoop() {
             }
         }
     } catch (e) { 
-        if (readIteration) debugLog("READ LOOP ERROR: " + e.message, "err"); 
+        if (readIteration) debugLog("READER STREAM ERROR: " + e.message, "err"); 
     } finally {
         if (reader) reader.releaseLock();
     }
@@ -131,26 +131,26 @@ async function waitACK(timeout = 2000) {
             const b = rxBuffer.shift();
             if (b === BOOT_CMD.ACK) return true;
             if (b === BOOT_CMD.NACK) {
-                debugLog("!! NACK (0x1F) RECEIVED !!", "err");
+                debugLog("!! NACK (0x1F) RECEIVED FROM TARGET !!", "err");
                 return false;
             }
         }
         await sleep(5);
     }
-    debugLog("!! TIMEOUT WAITING FOR ACK !!", "err");
+    debugLog("!! RESPONSE TIMEOUT !!", "err");
     return false;
 }
 
 async function closePort() {
-    debugLog("Closing serial port and releasing resources...", "info");
+    debugLog("Terminating connection and releasing system port...", "info");
     readIteration = false; 
     try {
         if (reader) await reader.cancel();
         if (writer) writer.releaseLock();
         if (port) await port.close();
-        debugLog("PORT CLOSED SUCCESSFULLY.", "success");
+        debugLog("PORT DISCONNECTED.", "success");
     } catch (e) {
-        debugLog("ERROR DURING DISCONNECTION: " + e.message, "err");
+        debugLog("DISCONNECTION FAULT: " + e.message, "err");
     }
     document.getElementById('flashBtn').disabled = true;
     port = null; writer = null; reader = null;
@@ -187,9 +187,9 @@ document.getElementById('connectBtn').onclick = async () => {
         writer = port.writable.getWriter();
         reader = port.readable.getReader();
         readLoop();
-        debugLog("SERIAL PORT CONNECTED.", "success");
+        debugLog("OPENOSD-X INTERFACE CONNECTED.", "success");
         document.getElementById('flashBtn').disabled = false;
-    } catch (e) { debugLog("CONNECTION ERROR: " + e.message, "err"); }
+    } catch (e) { debugLog("INTERFACE ERROR: " + e.message, "err"); }
 };
 
 document.getElementById('flashBtn').onclick = async () => {
@@ -197,41 +197,41 @@ document.getElementById('flashBtn').onclick = async () => {
     if (!file || !port) return;
 
     try {
-        debugLog("--- STARTING FLASH SEQUENCE ---", "step");
+        debugLog("--- INITIATING OPENOSD-X FLASH SEQUENCE ---", "step");
         const { memory, minAddr, maxAddr } = parseHex(await file.text());
-        debugLog(`HEX DATA: MinAddr=0x${minAddr.toString(16)}, MaxAddr=0x${maxAddr.toString(16)}, Size=${maxAddr-minAddr} bytes`, "info");
+        debugLog(`IMAGE LOADED: 0x${minAddr.toString(16)} - 0x${maxAddr.toString(16)} (${maxAddr-minAddr} bytes)`, "info");
 
         // --- MSP Passthrough ---
-        debugLog("STEP 1: INITIALIZING SERIAL PASSTHROUGH (MSP)", "step");
+        debugLog("PHASE 1: BRIDGE INITIALIZATION (MSP)", "step");
         let p = [0x24, 0x58, 0x3C, 0x00, 0xF5, 0x00, 0x02, 0x00, 0xFE, 0x11];
         p.push(mspCRC(p.slice(3, 10)));
         await writeAndLog(p);
         await sleep(1000);
 
         // --- MSP Bootloader Start ---
-        debugLog("STEP 2: ACTIVATING SYSTEM BOOTLOADER", "step");
+        debugLog("PHASE 2: INVOKING SYSTEM BOOTLOADER", "step");
         let b = [0x24, 0x58, 0x3C, 0x00, 0x44, 0x00, 0x00, 0x00];
         b.push(mspCRC(b.slice(3, 8)));
         await writeAndLog(b);
-        debugLog("Waiting 1500ms for MCU hardware reset...", "info");
+        debugLog("System reset in progress (1500ms)...", "info");
         await sleep(1500);
         rxBuffer = []; 
 
         // --- Sync ---
-        debugLog("STEP 3: STM32 BOOTLOADER SYNCHRONIZATION", "step");
+        debugLog("PHASE 3: UART BAUD-RATE SYNCHRONIZATION", "step");
         let synced = false;
         for(let i=0; i<5; i++) {
             debugLog(`SYNC ATTEMPT ${i+1}...`);
             await writer.write(new Uint8Array([0x7F]));
             if (await waitACK(500)) { synced = true; break; }
         }
-        if (!synced) throw new Error("SYNC FAILED: NO ACK RECEIVED FROM 0x7F.");
-        debugLog("SYNCHRONIZATION SUCCESSFUL.", "success");
+        if (!synced) throw new Error("SYNC FAILED: TARGET NOT RESPONDING TO 0x7F.");
+        debugLog("SYNC SUCCESSFUL.", "success");
 
         // --- Get ID ---
-        debugLog("STEP 4: READING DEVICE IDENTIFIER", "step");
+        debugLog("PHASE 4: DEVICE IDENTIFICATION", "step");
         await writeAndLog([BOOT_CMD.GET_ID, BOOT_CMD.GET_ID ^ 0xFF]);
-        if (!await waitACK()) throw new Error("GET_ID COMMAND REJECTED.");
+        if (!await waitACK()) throw new Error("ID REQUEST DENIED.");
         
         while(rxBuffer.length < 1) await sleep(10);
         const idLen = rxBuffer.shift();
@@ -241,28 +241,28 @@ document.getElementById('flashBtn').onclick = async () => {
             idData.push(rxBuffer.shift());
         }
         await waitACK(); 
-        debugLog(`TARGET DEVICE PID: 0x${toHex(idData)}`, "success");
+        debugLog(`TARGET PRODUCT ID: 0x${toHex(idData)}`, "success");
 
         // --- Erase ---
         const startPage = Math.floor((minAddr - G4_CONF.FLASH_BASE) / G4_CONF.PAGE_SIZE);
         const endPage = Math.floor((maxAddr - G4_CONF.FLASH_BASE - 1) / G4_CONF.PAGE_SIZE);
         const totalPages = endPage - startPage + 1;
-        debugLog(`STEP 5: ERASING FLASH MEMORY (${totalPages} PAGES)`, "step");
+        debugLog(`PHASE 5: PERFORMING FLASH ERASE (${totalPages} PAGES)`, "step");
 
         for (let p = startPage; p <= endPage; p++) {
-            debugLog(`ERASING PAGE ${p}...`);
+            debugLog(`ERASING PAGE ID: ${p}...`);
             await writeAndLog([BOOT_CMD.EXTENDED_ERASE, BOOT_CMD.EXTENDED_ERASE ^ 0xFF]);
-            if (!await waitACK()) throw new Error(`ERASE CMD REJECTED AT PAGE ${p}`);
+            if (!await waitACK()) throw new Error(`ERASE FAILED AT PAGE ${p}`);
             
             const payload = [0x00, 0x00, (p >> 8) & 0xFF, p & 0xFF];
             await writeAndLog([...payload, calcCS(payload)]);
             if (!await waitACK(5000)) throw new Error(`ERASE TIMEOUT AT PAGE ${p}`);
         }
-        debugLog("FLASH ERASE COMPLETED.", "success");
+        debugLog("MEMORY PURGE COMPLETED.", "success");
         await sleep(500);
 
         // --- Write ---
-        debugLog("STEP 6: WRITING FIRMWARE DATA", "step");
+        debugLog("PHASE 6: DATA TRANSMISSION & FLASH WRITE", "step");
         const totalSize = maxAddr - minAddr;
         let written = 0;
         let lastLogPercent = -10;
@@ -273,19 +273,16 @@ document.getElementById('flashBtn').onclick = async () => {
                 chunk.push(memory.get(addr + j) ?? 0xFF);
             }
 
-            // Write CMD
             await writeAndLog([BOOT_CMD.WRITE_MEMORY, BOOT_CMD.WRITE_MEMORY ^ 0xFF]);
-            if (!await waitACK()) throw new Error("WRITE COMMAND REJECTED.");
+            if (!await waitACK()) throw new Error("WRITE CMD NACK.");
 
-            // Address
             const aB = [(addr >> 24) & 0xFF, (addr >> 16) & 0xFF, (addr >> 8) & 0xFF, addr & 0xFF];
             await writeAndLog([...aB, calcCS(aB)]);
-            if (!await waitACK()) throw new Error(`ADDRESS 0x${addr.toString(16)} REJECTED.`);
+            if (!await waitACK()) throw new Error(`ADDRESS FAULT AT 0x${addr.toString(16)}`);
 
-            // Data
             const dPL = [chunk.length - 1, ...chunk];
             await writeAndLog([...dPL, calcCS(dPL)]);
-            if (!await waitACK()) throw new Error(`DATA PAYLOAD REJECTED AT 0x${addr.toString(16)}`);
+            if (!await waitACK()) throw new Error(`DATA WRITE REJECTED AT 0x${addr.toString(16)}`);
 
             written += chunk.length;
             const percent = Math.floor((written / totalSize) * 100);
@@ -293,17 +290,17 @@ document.getElementById('flashBtn').onclick = async () => {
             document.getElementById('progressText').textContent = `${percent}% (${written}/${totalSize} BYTES)`;
 
             if (percent >= lastLogPercent + 10) {
-                debugLog(`--- WRITE PROGRESS: ${percent}% ---`, "info");
+                debugLog(`>>> FLASH PROGRESS: ${percent}% <<<`, "info");
                 lastLogPercent = percent;
             }
         }
 
-        debugLog("FLASH PROCESS COMPLETED SUCCESSFULLY!", "success");
-        alert("FLASHING COMPLETED! DISCONNECTING PORT.");
+        debugLog("--- FLASHING PROCESS COMPLETED SUCCESSFULLY ---", "success");
+        alert("PROCESS FINISHED. PORT HAS BEEN RELEASED.");
 
     } catch (e) {
-        debugLog("FATAL FLASH ERROR: " + e.message, "err");
-        alert("ERROR: " + e.message);
+        debugLog("FATAL SYSTEM ERROR: " + e.message, "err");
+        alert("CRITICAL ERROR: " + e.message);
     } finally {
         await closePort();
     }
